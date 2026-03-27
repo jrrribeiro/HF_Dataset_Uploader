@@ -40,11 +40,40 @@ The app supports two execution modes:
 
 This flow reduces manual errors and gives operators confidence before publishing data.
 
+## Upload Strategies
+
+### Strategy 1: Upload Segments via Hugging Face Space (Recommended for Teams)
+
+1. Open the deployed uploader app on Hugging Face Spaces
+2. In "Upload de Segmentos" section:
+   - **Locally**: Create compressed file of segments:
+     ```bash
+     tar -czf segments.tar.gz /path/to/BirdNET\ Segments/
+     ```
+   - **Upload**: Drag & drop `segments.tar.gz` to the file input
+   - Specify dataset repo (e.g., `username/ppbio-dataset`)
+   - Click "Enviar Segmentos para Dataset"
+3. Once segments are uploaded, proceed to dry-run and upload detections
+
+### Strategy 2: Upload Segments via Local CLI Script
+
+If you prefer to run locally with full control:
+
+```bash
+python upload_segments_local.py "/path/to/BirdNET Segments" "username/ppbio-dataset"
+```
+
+Optional arguments:
+```bash
+python upload_segments_local.py "/path" "user/repo" --token YOUR_HF_TOKEN --batch-size 100
+```
+
 ## Input Requirements
 
-- BirdNET detections CSV with required columns
-- Segments root directory containing .wav files
-- Target Hugging Face dataset repo in owner/repo format
+- **BirdNET detections CSV** with required columns: `source_file`, `scientific_name`, `confidence`, `start_time`, `end_time`
+- **Segments folder or archive** (.tar, .tar.gz, .zip) containing .wav files organized by species
+- **Hugging Face dataset repo** in format `owner/repo`
+- **HF token** (optional if already authenticated in environment)
 
 ## Quick Start (Local)
 

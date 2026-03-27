@@ -1,5 +1,6 @@
 import json
 import os
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -22,78 +23,80 @@ def _build_api(token: str) -> HfApi:
     return HfApi()
 
 
+def _extract_compressed_segments(
+    archive_path: str,
+) -> tuple[Path | None, tempfile.TemporaryDirectory[str] | None]:
+    """Extract tar.gz, tar, or zip maintaining directory structure."""
+    if not archive_path or not Path(archive_path).exists():
+        return None, None
+
+    temp_dir = tempfile.TemporaryDirectory()
+    try:
+        if archive_path.endswith((".tar.gz", ".tgz")):
+            with tarfile.open(archive_path, "r:gz") as archive:
+                archive.extractall(temp_dir.name)
+        elif archive_path.endswith(".tar"):
+            with tarfile.open(archive_path, "r") as archive:
+                archive.extractall(temp_dir.name)
+        elif archive_path.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as archive:
+                archive.extractall(temp_dir.name)
+        else:
+            temp_dir.cleanup()
+            return None, None
+        return Path(temp_dir.name), temp_dir
+    except Exception:
+        temp_dir.cleanup()
+        return None, None
+
+
 def _resolve_segments_root(
     segments_path: str,
     segments_zip_path: str | None,
 ) -> tuple[Path | None, tempfile.TemporaryDirectory[str] | None]:
-    clean_segments_path = (segments_path or "").strip()
-    if clean_segments_path and Path(clean_segments_path).exists():
-        return Path(clean_segments_path), None
-
     if segments_zip_path and Path(segments_zip_path).exists():
-        temp_dir = tempfile.TemporaryDirectory()
-        with zipfile.ZipFile(segments_zip_path) as archive:
-            archive.extractall(temp_dir.name)
-        return Path(temp_dir.name), temp_dir
-
+        return _extract_compressed_segments(segments_zip_path)
     return None, None
-
-
-def _pick_local_folder(current_value: str) -> tuple[str, str]:
-    if os.getenv("SPACE_ID"):
-        return current_value or "", "Selecao de pasta local indisponivel no Space. Use execucao local."
-
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:
-        return current_value or "", f"Nao foi possivel abrir seletor local: {exc}"
-
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(title="Selecione a pasta raiz de segmentos")
-        root.destroy()
-        if selected:
-            return selected, "Pasta local selecionada."
-        return current_value or "", "Selecao de pasta cancelada."
-    except Exception as exc:
-        return current_value or "", f"Erro ao selecionar pasta local: {exc}"
 
 
 def _run_segments_upload(
     dataset_repo: str,
-    segments_path: str,
+    archive_path: str | None,
     token: str,
 ) -> tuple[str, str]:
     dataset_repo = (dataset_repo or "").strip()
-    segments_path = (segments_path or "").strip()
-
     if not dataset_repo or "/" not in dataset_repo:
         return "❌ Informe dataset repo no formato owner/repo", "{}"
-    if not segments_path or not Path(segments_path).exists():
-        return "❌ Selecione a pasta de segmentos valida", "{}"
+    if not archive_path:
+        return "❌ Envie um arquivo (.tar, .tar.gz, ou .zip) de segmentos", "{}"
 
     try:
-        from cli.hf_dataset_cli import upload_segments_to_hf
-        project_slug = dataset_repo.split("/")[1].replace("-dataset", "")
-        api = _build_api(token)
-        result = upload_segments_to_hf(
-            api=api,
-            project_slug=project_slug,
-            dataset_repo=dataset_repo,
-            segments_root=segments_path,
-        )
-        summary = (
-            f"✅ Upload de segmentos completo | "
-            f"Total: {result['total_files']} | "
-            f"Enviados: {result['uploaded']} | "
-            f"Falhas: {result['failed']}"
-        )
-        return summary, _as_pretty_json(result)
+        segments_root, temp_dir = _extract_compressed_segments(archive_path)
+        if segments_root is None:
+            return "❌ Arquivo compactado invalido", "{}"
+
+        try:
+            from cli.hf_dataset_cli import upload_segments_to_hf
+            project_slug = dataset_repo.split("/")[1].replace("-dataset", "")
+            api = _build_api(token)
+            result = upload_segments_to_hf(
+                api=api,
+                project_slug=project_slug,
+                dataset_repo=dataset_repo,
+                segments_root=str(segments_root),
+            )
+            summary = (
+                f"✅ Upload de segmentos completo | "
+                f"Total: {result['total_files']} | "
+                f"Enviados: {result['uploaded']} | "
+                f"Falhas: {result['failed']}"
+            )
+            return summary, _as_pretty_json(result)
+        finally:
+            if temp_dir is not None:
+                temp_dir.cleanup()
     except Exception as exc:
-        return f"❌ Upload de segmentos falhou: {exc}", "{}"
+        return f"❌ Upload falhou: {exc}", "{}"
 
 
 def build_upload_app() -> gr.Blocks:
@@ -109,31 +112,29 @@ def build_upload_app() -> gr.Blocks:
             dataset_repo = gr.Textbox(label="Dataset Repo (HF)", placeholder="owner/repo")
 
         detections_csv = gr.File(label="CSV de deteccoes", file_types=[".csv"], type="filepath")
-        segments_root = gr.Textbox(
-            label="Pasta raiz de segmentos",
-            placeholder=r"ex: C:\dados\BirdNET Segments",
-        )
-        pick_segments_button = gr.Button("Selecionar pasta local", variant="secondary")
         segments_zip = gr.File(
-            label="ZIP da pasta de segmentos (use no Space)",
-            file_types=[".zip"],
+            label="Arquivo compactado de segmentos (.tar, .tar.gz, ou .zip)",
+            file_types=[".tar", ".tar.gz", ".tgz", ".zip"],
             type="filepath",
         )
         gr.Markdown(
-            "No Hugging Face Space, caminho local do seu PC (ex: C:/...) nao existe no servidor. "
-            "Use o campo ZIP para enviar a pasta de segmentos."
+            "**Opção 1 (no Space):** Use o arquivo compactado acima e proceda com dry-run + upload.  "
+            "**Opção 2 (Upload prévio de segmentos):** Use a seção abaixo para enviar os segmentos para um dataset HF antes de ingerir dados."
         )
 
         with gr.Group():
             gr.Markdown(
-                "#### Ou: Enviar segmentos inteiros (50GB+) antes de processar deteccoes\n"
-                "Use esta secao para fazer upload de toda a pasta de segmentos para um dataset HF. "
-                "Recomendado executar primeira vez, antes de ingerir deteccoes CSV."
+                "### Upload de Segmentos (execução prévia recomendada)\n"
+                "Envie arquivo compactado (.tar.gz, .tar, ou .zip) com os segmentos para um dataset HF. "
+                "Use .tar.gz para melhor compressão (50GB fica com ~30GB)."
             )
             with gr.Row():
                 segments_upload_repo = gr.Textbox(label="Dataset Repo (HF)", placeholder="owner/repo-dataset")
-                segments_upload_path_input = gr.Textbox(label="Pasta de Segmentos (local)")
-            pick_segments_upload_button = gr.Button("Selecionar pasta para upload", variant="secondary")
+                segments_upload_file = gr.File(
+                    label="Arquivo (.tar.gz, .tar ou .zip)",
+                    file_types=[".tar", ".tar.gz", ".tgz", ".zip"],
+                    type="filepath",
+                )
             segments_upload_token = gr.Textbox(
                 label="HF Token (opcional)",
                 type="password",
@@ -269,25 +270,13 @@ def build_upload_app() -> gr.Blocks:
 
         dry_run_button.click(
             fn=run_dry_run,
-            inputs=[project_slug, dataset_repo, detections_csv, segments_root, segments_zip, report_file],
+            inputs=[project_slug, dataset_repo, detections_csv, "", segments_zip, report_file],
             outputs=[status, result_json],
-        )
-
-        pick_segments_button.click(
-            fn=_pick_local_folder,
-            inputs=[segments_root],
-            outputs=[segments_root, status],
-        )
-
-        pick_segments_upload_button.click(
-            fn=_pick_local_folder,
-            inputs=[segments_upload_path_input],
-            outputs=[segments_upload_path_input, segments_upload_status],
         )
 
         segments_upload_button.click(
             fn=_run_segments_upload,
-            inputs=[segments_upload_repo, segments_upload_path_input, segments_upload_token],
+            inputs=[segments_upload_repo, segments_upload_file, segments_upload_token],
             outputs=[segments_upload_status, segments_upload_result],
         )
 
@@ -297,7 +286,7 @@ def build_upload_app() -> gr.Blocks:
                 project_slug,
                 dataset_repo,
                 detections_csv,
-                segments_root,
+                "",
                 segments_zip,
                 hf_token,
                 batch_size,
