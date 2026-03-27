@@ -62,6 +62,40 @@ def _pick_local_folder(current_value: str) -> tuple[str, str]:
         return current_value or "", f"Erro ao selecionar pasta local: {exc}"
 
 
+def _run_segments_upload(
+    dataset_repo: str,
+    segments_path: str,
+    token: str,
+) -> tuple[str, str]:
+    dataset_repo = (dataset_repo or "").strip()
+    segments_path = (segments_path or "").strip()
+
+    if not dataset_repo or "/" not in dataset_repo:
+        return "❌ Informe dataset repo no formato owner/repo", "{}"
+    if not segments_path or not Path(segments_path).exists():
+        return "❌ Selecione a pasta de segmentos valida", "{}"
+
+    try:
+        from cli.hf_dataset_cli import upload_segments_to_hf
+        project_slug = dataset_repo.split("/")[1].replace("-dataset", "")
+        api = _build_api(token)
+        result = upload_segments_to_hf(
+            api=api,
+            project_slug=project_slug,
+            dataset_repo=dataset_repo,
+            segments_root=segments_path,
+        )
+        summary = (
+            f"✅ Upload de segmentos completo | "
+            f"Total: {result['total_files']} | "
+            f"Enviados: {result['uploaded']} | "
+            f"Falhas: {result['failed']}"
+        )
+        return summary, _as_pretty_json(result)
+    except Exception as exc:
+        return f"❌ Upload de segmentos falhou: {exc}", "{}"
+
+
 def build_upload_app() -> gr.Blocks:
     with gr.Blocks(title="BirdNET Segments Uploader") as demo:
         gr.Markdown("# BirdNET Segments Uploader")
@@ -89,6 +123,25 @@ def build_upload_app() -> gr.Blocks:
             "No Hugging Face Space, caminho local do seu PC (ex: C:/...) nao existe no servidor. "
             "Use o campo ZIP para enviar a pasta de segmentos."
         )
+
+        with gr.Group():
+            gr.Markdown(
+                "#### Ou: Enviar segmentos inteiros (50GB+) antes de processar deteccoes\n"
+                "Use esta secao para fazer upload de toda a pasta de segmentos para um dataset HF. "
+                "Recomendado executar primeira vez, antes de ingerir deteccoes CSV."
+            )
+            with gr.Row():
+                segments_upload_repo = gr.Textbox(label="Dataset Repo (HF)", placeholder="owner/repo-dataset")
+                segments_upload_path_input = gr.Textbox(label="Pasta de Segmentos (local)")
+            pick_segments_upload_button = gr.Button("Selecionar pasta para upload", variant="secondary")
+            segments_upload_token = gr.Textbox(
+                label="HF Token (opcional)",
+                type="password",
+                placeholder="Se vazio, usa sessao ja autenticada",
+            )
+            segments_upload_button = gr.Button("Enviar Segmentos para Dataset", variant="primary")
+            segments_upload_status = gr.Markdown(value="Pronto")
+            segments_upload_result = gr.Code(label="Resultado JSON", language="json")
 
         with gr.Accordion("Configuracao avancada", open=False):
             hf_token = gr.Textbox(
@@ -224,6 +277,18 @@ def build_upload_app() -> gr.Blocks:
             fn=_pick_local_folder,
             inputs=[segments_root],
             outputs=[segments_root, status],
+        )
+
+        pick_segments_upload_button.click(
+            fn=_pick_local_folder,
+            inputs=[segments_upload_path_input],
+            outputs=[segments_upload_path_input, segments_upload_status],
+        )
+
+        segments_upload_button.click(
+            fn=_run_segments_upload,
+            inputs=[segments_upload_repo, segments_upload_path_input, segments_upload_token],
+            outputs=[segments_upload_status, segments_upload_result],
         )
 
         upload_button.click(

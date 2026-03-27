@@ -817,6 +817,85 @@ def collect_verify_errors(repo_files: set[str], manifest_payload: dict[str, Any]
     return errors
 
 
+def upload_segments_to_hf(
+    api: HfApi,
+    project_slug: str,
+    dataset_repo: str,
+    segments_root: str,
+    batch_size: int = 50,
+) -> dict[str, Any]:
+    """Upload local segments folder to dataset repo maintaining directory structure."""
+    segments_path = Path(segments_root)
+    if not segments_path.exists() or not segments_path.is_dir():
+        raise FileNotFoundError(f"Segments root not found: {segments_root}")
+
+    ensure_project_dataset_structure(
+        api=api,
+        project_slug=project_slug,
+        dataset_repo=dataset_repo,
+        create_private_repo=False,
+    )
+
+    all_audio_files: list[Path] = []
+    for ext in SUPPORTED_AUDIO_EXTENSIONS:
+        all_audio_files.extend(segments_path.rglob(f"*{ext}"))
+    all_audio_files = sorted(all_audio_files)
+
+    if not all_audio_files:
+        return {
+            "project_slug": project_slug,
+            "dataset_repo": dataset_repo,
+            "mode": "upload-segments-only",
+            "total_files": 0,
+            "uploaded": 0,
+            "failed": 0,
+        }
+
+    uploaded_count = 0
+    failed_count = 0
+    failed_files: list[str] = []
+
+    batches = _chunk_items(all_audio_files, batch_size)
+    for batch_idx, batch in enumerate(batches, start=1):
+        for local_file in batch:
+            relative_path = local_file.relative_to(segments_path)
+            repo_path = f"audio/{project_slug}/{relative_path.as_posix()}"
+
+            try:
+                api.upload_file(
+                    path_or_fileobj=str(local_file),
+                    path_in_repo=repo_path,
+                    repo_id=dataset_repo,
+                    repo_type="dataset",
+                )
+                uploaded_count += 1
+            except Exception as exc:
+                failed_count += 1
+                failed_files.append(f"{relative_path.as_posix()}: {exc}")
+
+        print(
+            json.dumps(
+                {
+                    "event": "upload-batch",
+                    "batch": batch_idx,
+                    "total_batches": len(batches),
+                    "uploaded_so_far": uploaded_count,
+                    "failed_so_far": failed_count,
+                }
+            )
+        )
+
+    return {
+        "project_slug": project_slug,
+        "dataset_repo": dataset_repo,
+        "mode": "upload-segments-only",
+        "total_files": len(all_audio_files),
+        "uploaded": uploaded_count,
+        "failed": failed_count,
+        "failed_samples": failed_files[:10],
+    }
+
+
 def verify_project(api: HfApi, project_slug: str, dataset_repo: str) -> dict[str, Any]:
     repo_files = set(api.list_repo_files(repo_id=dataset_repo, repo_type="dataset"))
     if "manifest.json" not in repo_files:
