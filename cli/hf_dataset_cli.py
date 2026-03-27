@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 from huggingface_hub import HfApi, hf_hub_download
@@ -823,11 +823,19 @@ def upload_segments_to_hf(
     dataset_repo: str,
     segments_root: str,
     batch_size: int = 50,
+    max_retries: int = 3,
+    retry_backoff_seconds: float = 1.0,
+    should_pause: Callable[[], bool] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Upload local segments folder to dataset repo maintaining directory structure."""
     segments_path = Path(segments_root)
     if not segments_path.exists() or not segments_path.is_dir():
         raise FileNotFoundError(f"Segments root not found: {segments_root}")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
 
     ensure_project_dataset_structure(
         api=api,
@@ -841,6 +849,17 @@ def upload_segments_to_hf(
         all_audio_files.extend(segments_path.rglob(f"*{ext}"))
     all_audio_files = sorted(all_audio_files)
 
+    remote_files = set(api.list_repo_files(repo_id=dataset_repo, repo_type="dataset"))
+    pending: list[tuple[Path, str]] = []
+    skipped_existing = 0
+    for local_file in all_audio_files:
+        relative_path = local_file.relative_to(segments_path)
+        repo_path = f"audio/{project_slug}/{relative_path.as_posix()}"
+        if repo_path in remote_files:
+            skipped_existing += 1
+            continue
+        pending.append((local_file, repo_path))
+
     if not all_audio_files:
         return {
             "project_slug": project_slug,
@@ -848,30 +867,73 @@ def upload_segments_to_hf(
             "mode": "upload-segments-only",
             "total_files": 0,
             "uploaded": 0,
+            "skipped_existing": 0,
             "failed": 0,
+            "cancelled": False,
         }
 
     uploaded_count = 0
     failed_count = 0
+    cancelled = False
     failed_files: list[str] = []
 
-    batches = _chunk_items(all_audio_files, batch_size)
+    batches = _chunk_items(pending, batch_size) if pending else []
+    total_pending = len(pending)
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "upload-start",
+                "total_files": len(all_audio_files),
+                "pending": total_pending,
+                "skipped_existing": skipped_existing,
+            }
+        )
+
     for batch_idx, batch in enumerate(batches, start=1):
-        for local_file in batch:
+        for local_file, repo_path in batch:
+            if should_cancel and should_cancel():
+                cancelled = True
+                break
+
+            while should_pause and should_pause():
+                time.sleep(0.5)
+                if should_cancel and should_cancel():
+                    cancelled = True
+                    break
+
+            if cancelled:
+                break
+
             relative_path = local_file.relative_to(segments_path)
-            repo_path = f"audio/{project_slug}/{relative_path.as_posix()}"
 
             try:
-                api.upload_file(
-                    path_or_fileobj=str(local_file),
+                _upload_audio_with_retry(
+                    api=api,
+                    dataset_repo=dataset_repo,
+                    local_path=local_file,
                     path_in_repo=repo_path,
-                    repo_id=dataset_repo,
-                    repo_type="dataset",
+                    max_retries=max_retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
                 )
                 uploaded_count += 1
             except Exception as exc:
                 failed_count += 1
                 failed_files.append(f"{relative_path.as_posix()}: {exc}")
+
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "upload-progress",
+                        "uploaded": uploaded_count,
+                        "failed": failed_count,
+                        "skipped_existing": skipped_existing,
+                        "processed_pending": uploaded_count + failed_count,
+                        "pending_total": total_pending,
+                    }
+                )
+
+        if cancelled:
+            break
 
         print(
             json.dumps(
@@ -881,8 +943,20 @@ def upload_segments_to_hf(
                     "total_batches": len(batches),
                     "uploaded_so_far": uploaded_count,
                     "failed_so_far": failed_count,
+                    "skipped_existing": skipped_existing,
                 }
             )
+        )
+
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "upload-complete",
+                "uploaded": uploaded_count,
+                "failed": failed_count,
+                "skipped_existing": skipped_existing,
+                "cancelled": cancelled,
+            }
         )
 
     return {
@@ -890,8 +964,11 @@ def upload_segments_to_hf(
         "dataset_repo": dataset_repo,
         "mode": "upload-segments-only",
         "total_files": len(all_audio_files),
+        "pending_files": total_pending,
         "uploaded": uploaded_count,
+        "skipped_existing": skipped_existing,
         "failed": failed_count,
+        "cancelled": cancelled,
         "failed_samples": failed_files[:10],
     }
 

@@ -1,7 +1,8 @@
 import json
-import os
 import tarfile
 import tempfile
+import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -59,44 +60,176 @@ def _resolve_segments_root(
     return None, None
 
 
-def _run_segments_upload(
-    dataset_repo: str,
-    archive_path: str | None,
-    token: str,
-) -> tuple[str, str]:
-    dataset_repo = (dataset_repo or "").strip()
-    if not dataset_repo or "/" not in dataset_repo:
-        return "❌ Informe dataset repo no formato owner/repo", "{}"
-    if not archive_path:
-        return "❌ Envie um arquivo (.tar, .tar.gz, ou .zip) de segmentos", "{}"
+class SegmentsUploadSession:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._pause = False
+        self._cancel = False
+        self._status = "idle"
+        self._message = "Pronto"
+        self._progress: dict[str, Any] = {}
+        self._result: dict[str, Any] = {}
+        self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
 
-    try:
-        segments_root, temp_dir = _extract_compressed_segments(archive_path)
-        if segments_root is None:
-            return "❌ Arquivo compactado invalido", "{}"
+    def _is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
-        try:
-            from cli.hf_dataset_cli import upload_segments_to_hf
-            project_slug = dataset_repo.split("/")[1].replace("-dataset", "")
-            api = _build_api(token)
-            result = upload_segments_to_hf(
-                api=api,
-                project_slug=project_slug,
-                dataset_repo=dataset_repo,
-                segments_root=str(segments_root),
-            )
-            summary = (
-                f"✅ Upload de segmentos completo | "
-                f"Total: {result['total_files']} | "
-                f"Enviados: {result['uploaded']} | "
-                f"Falhas: {result['failed']}"
-            )
-            return summary, _as_pretty_json(result)
-        finally:
-            if temp_dir is not None:
-                temp_dir.cleanup()
-    except Exception as exc:
-        return f"❌ Upload falhou: {exc}", "{}"
+    def _on_progress(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self._progress = payload
+
+    def _should_pause(self) -> bool:
+        with self._lock:
+            return self._pause
+
+    def _should_cancel(self) -> bool:
+        with self._lock:
+            return self._cancel
+
+    def start(self, dataset_repo: str, archive_path: str | None, token: str, batch_size: int) -> tuple[str, str]:
+        repo = (dataset_repo or "").strip()
+        if not repo or "/" not in repo:
+            return "❌ Informe dataset repo no formato owner/repo", "{}"
+        if not archive_path:
+            return "❌ Envie um arquivo (.tar, .tar.gz, ou .zip) de segmentos", "{}"
+
+        with self._lock:
+            if self._is_running():
+                return "⏳ Ja existe upload em andamento", _as_pretty_json(self.snapshot())
+
+            segments_root, temp_dir = _extract_compressed_segments(archive_path)
+            if segments_root is None or temp_dir is None:
+                return "❌ Arquivo compactado invalido", "{}"
+
+            self._pause = False
+            self._cancel = False
+            self._status = "running"
+            self._message = "Upload iniciado"
+            self._progress = {"event": "upload-start"}
+            self._result = {}
+            self._temp_dir = temp_dir
+
+            def worker() -> None:
+                try:
+                    from cli.hf_dataset_cli import upload_segments_to_hf
+
+                    project_slug = repo.split("/")[1].replace("-dataset", "")
+                    api = _build_api(token)
+                    result = upload_segments_to_hf(
+                        api=api,
+                        project_slug=project_slug,
+                        dataset_repo=repo,
+                        segments_root=str(segments_root),
+                        batch_size=int(batch_size),
+                        should_pause=self._should_pause,
+                        should_cancel=self._should_cancel,
+                        progress_callback=self._on_progress,
+                    )
+                    with self._lock:
+                        if result.get("cancelled"):
+                            self._status = "cancelled"
+                            self._message = "Upload cancelado"
+                        else:
+                            self._status = "completed"
+                            self._message = "Upload finalizado"
+                        self._result = result
+                except Exception as exc:
+                    with self._lock:
+                        self._status = "failed"
+                        self._message = f"Upload falhou: {exc}"
+                        self._result = {"error": str(exc)}
+                finally:
+                    with self._lock:
+                        temp = self._temp_dir
+                        self._temp_dir = None
+                    if temp is not None:
+                        temp.cleanup()
+
+            self._thread = threading.Thread(target=worker, daemon=True)
+            self._thread.start()
+
+        return "🚀 Upload iniciado em background", _as_pretty_json(self.snapshot())
+
+    def pause(self) -> tuple[str, str]:
+        with self._lock:
+            if not self._is_running():
+                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(self.snapshot())
+            self._pause = True
+            self._status = "paused"
+            self._message = "Upload pausado"
+        return "⏸️ Upload pausado", _as_pretty_json(self.snapshot())
+
+    def resume(self) -> tuple[str, str]:
+        with self._lock:
+            if not self._is_running():
+                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(self.snapshot())
+            self._pause = False
+            self._status = "running"
+            self._message = "Upload retomado"
+        return "▶️ Upload retomado", _as_pretty_json(self.snapshot())
+
+    def cancel(self) -> tuple[str, str]:
+        with self._lock:
+            if not self._is_running():
+                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(self.snapshot())
+            self._cancel = True
+            self._pause = False
+            self._status = "cancelling"
+            self._message = "Cancelamento solicitado"
+        return "🛑 Cancelamento solicitado", _as_pretty_json(self.snapshot())
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "status": self._status,
+            "message": self._message,
+            "progress": self._progress,
+            "result": self._result,
+            "is_running": self._is_running(),
+            "timestamp": int(time.time()),
+        }
+
+    def status(self) -> tuple[str, str]:
+        snap = self.snapshot()
+        state = snap.get("status", "idle")
+        if state == "running":
+            msg = "⏳ Upload em andamento"
+        elif state == "paused":
+            msg = "⏸️ Upload pausado"
+        elif state == "completed":
+            msg = "✅ Upload concluido"
+        elif state == "failed":
+            msg = "❌ Upload falhou"
+        elif state == "cancelled":
+            msg = "🛑 Upload cancelado"
+        elif state == "cancelling":
+            msg = "🛑 Cancelando upload..."
+        else:
+            msg = "ℹ️ Pronto"
+        return msg, _as_pretty_json(snap)
+
+
+_SEGMENTS_UPLOAD_SESSION = SegmentsUploadSession()
+
+
+def _start_segments_upload(dataset_repo: str, archive_path: str | None, token: str, batch_size: float) -> tuple[str, str]:
+    return _SEGMENTS_UPLOAD_SESSION.start(dataset_repo, archive_path, token, int(batch_size))
+
+
+def _pause_segments_upload() -> tuple[str, str]:
+    return _SEGMENTS_UPLOAD_SESSION.pause()
+
+
+def _resume_segments_upload() -> tuple[str, str]:
+    return _SEGMENTS_UPLOAD_SESSION.resume()
+
+
+def _cancel_segments_upload() -> tuple[str, str]:
+    return _SEGMENTS_UPLOAD_SESSION.cancel()
+
+
+def _refresh_segments_upload_status() -> tuple[str, str]:
+    return _SEGMENTS_UPLOAD_SESSION.status()
 
 
 def build_upload_app() -> gr.Blocks:
@@ -140,7 +273,13 @@ def build_upload_app() -> gr.Blocks:
                 type="password",
                 placeholder="Se vazio, usa sessao ja autenticada",
             )
-            segments_upload_button = gr.Button("Enviar Segmentos para Dataset", variant="primary")
+            segments_upload_batch_size = gr.Number(label="Batch size upload segmentos", value=50, precision=0)
+            with gr.Row():
+                segments_upload_start = gr.Button("Iniciar Upload", variant="primary")
+                segments_upload_pause = gr.Button("Pausar", variant="secondary")
+                segments_upload_resume = gr.Button("Retomar", variant="secondary")
+                segments_upload_cancel = gr.Button("Cancelar", variant="stop")
+                segments_upload_refresh = gr.Button("Atualizar Status", variant="secondary")
             segments_upload_status = gr.Markdown(value="Pronto")
             segments_upload_result = gr.Code(label="Resultado JSON", language="json")
 
@@ -189,7 +328,7 @@ def build_upload_app() -> gr.Blocks:
 
             segments_root, temp_dir = _resolve_segments_root(segments_path, segments_zip_path)
             if segments_root is None:
-                return "❌ Pasta de segmentos invalida. No Space, envie ZIP da pasta.", "{}"
+                return "❌ Pasta de segmentos invalida. No Space, envie .tar.gz, .tar ou .zip.", "{}"
 
             try:
                 result = run_ingest_segments_dry_run(
@@ -237,7 +376,7 @@ def build_upload_app() -> gr.Blocks:
 
             segments_root, temp_dir = _resolve_segments_root(segments_path, segments_zip_path)
             if segments_root is None:
-                return "❌ Pasta de segmentos invalida. No Space, envie ZIP da pasta.", "{}"
+                return "❌ Pasta de segmentos invalida. No Space, envie .tar.gz, .tar ou .zip.", "{}"
 
             try:
                 api = _build_api(token)
@@ -274,9 +413,33 @@ def build_upload_app() -> gr.Blocks:
             outputs=[status, result_json],
         )
 
-        segments_upload_button.click(
-            fn=_run_segments_upload,
-            inputs=[segments_upload_repo, segments_upload_file, segments_upload_token],
+        segments_upload_start.click(
+            fn=_start_segments_upload,
+            inputs=[segments_upload_repo, segments_upload_file, segments_upload_token, segments_upload_batch_size],
+            outputs=[segments_upload_status, segments_upload_result],
+        )
+
+        segments_upload_pause.click(
+            fn=_pause_segments_upload,
+            inputs=[],
+            outputs=[segments_upload_status, segments_upload_result],
+        )
+
+        segments_upload_resume.click(
+            fn=_resume_segments_upload,
+            inputs=[],
+            outputs=[segments_upload_status, segments_upload_result],
+        )
+
+        segments_upload_cancel.click(
+            fn=_cancel_segments_upload,
+            inputs=[],
+            outputs=[segments_upload_status, segments_upload_result],
+        )
+
+        segments_upload_refresh.click(
+            fn=_refresh_segments_upload_status,
+            inputs=[],
             outputs=[segments_upload_status, segments_upload_result],
         )
 
