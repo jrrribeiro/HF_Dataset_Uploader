@@ -1,4 +1,16 @@
-﻿# BirdNET-Uploader-App
+﻿---
+title: BirdNET Uploader App
+emoji: "🐦"
+colorFrom: green
+colorTo: blue
+sdk: gradio
+sdk_version: "5.0.0"
+python_version: "3.11"
+app_file: app.py
+pinned: false
+---
+
+# BirdNET-Uploader-App
 
 BirdNET-Uploader-App is a Gradio application for structured ingestion of BirdNET detections in multi-project workflows.
 
