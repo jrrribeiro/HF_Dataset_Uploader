@@ -1,4 +1,4 @@
-﻿---
+---
 title: BirdNET Uploader App
 emoji: "🐦"
 colorFrom: green
