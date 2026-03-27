@@ -356,7 +356,6 @@ def build_upload_app() -> gr.Blocks:
             project: str,
             repo: str,
             csv_path: str | None,
-            segments_path: str,
             segments_zip_path: str | None,
             report_path: str,
         ) -> tuple[str, str]:
@@ -367,7 +366,7 @@ def build_upload_app() -> gr.Blocks:
             if not csv_path:
                 return "❌ Selecione o CSV de deteccoes", "{}"
 
-            segments_root, temp_dir = _resolve_segments_root(segments_path, segments_zip_path)
+            segments_root, temp_dir = _resolve_segments_root("", segments_zip_path)
             if segments_root is None:
                 return "❌ Pasta de segmentos invalida. No Space, envie .tar.gz, .tar ou .zip.", "{}"
 
@@ -396,7 +395,6 @@ def build_upload_app() -> gr.Blocks:
             project: str,
             repo: str,
             csv_path: str | None,
-            segments_path: str,
             segments_zip_path: str | None,
             token: str,
             batch: float,
@@ -415,7 +413,7 @@ def build_upload_app() -> gr.Blocks:
             if not csv_path:
                 return "❌ Selecione o CSV de deteccoes", "{}"
 
-            segments_root, temp_dir = _resolve_segments_root(segments_path, segments_zip_path)
+            segments_root, temp_dir = _resolve_segments_root("", segments_zip_path)
             if segments_root is None:
                 return "❌ Pasta de segmentos invalida. No Space, envie .tar.gz, .tar ou .zip.", "{}"
 
@@ -450,7 +448,7 @@ def build_upload_app() -> gr.Blocks:
 
         dry_run_button.click(
             fn=run_dry_run,
-            inputs=[project_slug, dataset_repo, detections_csv, "", segments_zip, report_file],
+            inputs=[project_slug, dataset_repo, detections_csv, segments_zip, report_file],
             outputs=[status, result_json],
         )
 
@@ -490,7 +488,6 @@ def build_upload_app() -> gr.Blocks:
                 project_slug,
                 dataset_repo,
                 detections_csv,
-                "",
                 segments_zip,
                 hf_token,
                 batch_size,
