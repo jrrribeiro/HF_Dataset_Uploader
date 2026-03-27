@@ -60,6 +60,31 @@ def _resolve_segments_root(
     return None, None
 
 
+def _format_segments_upload_progress(snapshot: dict[str, Any]) -> str:
+    progress = snapshot.get("progress", {}) if isinstance(snapshot, dict) else {}
+    result = snapshot.get("result", {}) if isinstance(snapshot, dict) else {}
+
+    pending_total = int(progress.get("pending_total") or result.get("pending_files") or 0)
+    processed_pending = int(progress.get("processed_pending") or 0)
+    uploaded = int(progress.get("uploaded") or result.get("uploaded") or 0)
+    failed = int(progress.get("failed") or result.get("failed") or 0)
+    skipped = int(progress.get("skipped_existing") or result.get("skipped_existing") or 0)
+
+    if pending_total > 0:
+        percent = min(100.0, (processed_pending / pending_total) * 100.0)
+        return (
+            f"**Progresso:** {percent:.1f}%  |  "
+            f"Processados: {processed_pending}/{pending_total}  |  "
+            f"Enviados: {uploaded}  |  Falhas: {failed}  |  Ja existentes: {skipped}"
+        )
+
+    total_files = int(progress.get("total_files") or result.get("total_files") or 0)
+    if total_files > 0:
+        return f"**Progresso:** preparando upload ({total_files} arquivos detectados)"
+
+    return "**Progresso:** aguardando inicio"
+
+
 class SegmentsUploadSession:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -87,20 +112,21 @@ class SegmentsUploadSession:
         with self._lock:
             return self._cancel
 
-    def start(self, dataset_repo: str, archive_path: str | None, token: str, batch_size: int) -> tuple[str, str]:
+    def start(self, dataset_repo: str, archive_path: str | None, token: str, batch_size: int) -> tuple[str, str, str]:
         repo = (dataset_repo or "").strip()
         if not repo or "/" not in repo:
-            return "❌ Informe dataset repo no formato owner/repo", "{}"
+            return "❌ Informe dataset repo no formato owner/repo", "{}", "**Progresso:** aguardando inicio"
         if not archive_path:
-            return "❌ Envie um arquivo (.tar, .tar.gz, ou .zip) de segmentos", "{}"
+            return "❌ Envie um arquivo (.tar, .tar.gz, ou .zip) de segmentos", "{}", "**Progresso:** aguardando inicio"
 
         with self._lock:
             if self._is_running():
-                return "⏳ Ja existe upload em andamento", _as_pretty_json(self.snapshot())
+                snap = self.snapshot()
+                return "⏳ Ja existe upload em andamento", _as_pretty_json(snap), _format_segments_upload_progress(snap)
 
             segments_root, temp_dir = _extract_compressed_segments(archive_path)
             if segments_root is None or temp_dir is None:
-                return "❌ Arquivo compactado invalido", "{}"
+                return "❌ Arquivo compactado invalido", "{}", "**Progresso:** aguardando inicio"
 
             self._pause = False
             self._cancel = False
@@ -149,35 +175,42 @@ class SegmentsUploadSession:
             self._thread = threading.Thread(target=worker, daemon=True)
             self._thread.start()
 
-        return "🚀 Upload iniciado em background", _as_pretty_json(self.snapshot())
+        snap = self.snapshot()
+        return "🚀 Upload iniciado em background", _as_pretty_json(snap), _format_segments_upload_progress(snap)
 
-    def pause(self) -> tuple[str, str]:
+    def pause(self) -> tuple[str, str, str]:
         with self._lock:
             if not self._is_running():
-                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(self.snapshot())
+                snap = self.snapshot()
+                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(snap), _format_segments_upload_progress(snap)
             self._pause = True
             self._status = "paused"
             self._message = "Upload pausado"
-        return "⏸️ Upload pausado", _as_pretty_json(self.snapshot())
+        snap = self.snapshot()
+        return "⏸️ Upload pausado", _as_pretty_json(snap), _format_segments_upload_progress(snap)
 
-    def resume(self) -> tuple[str, str]:
+    def resume(self) -> tuple[str, str, str]:
         with self._lock:
             if not self._is_running():
-                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(self.snapshot())
+                snap = self.snapshot()
+                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(snap), _format_segments_upload_progress(snap)
             self._pause = False
             self._status = "running"
             self._message = "Upload retomado"
-        return "▶️ Upload retomado", _as_pretty_json(self.snapshot())
+        snap = self.snapshot()
+        return "▶️ Upload retomado", _as_pretty_json(snap), _format_segments_upload_progress(snap)
 
-    def cancel(self) -> tuple[str, str]:
+    def cancel(self) -> tuple[str, str, str]:
         with self._lock:
             if not self._is_running():
-                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(self.snapshot())
+                snap = self.snapshot()
+                return "ℹ️ Nenhum upload em andamento", _as_pretty_json(snap), _format_segments_upload_progress(snap)
             self._cancel = True
             self._pause = False
             self._status = "cancelling"
             self._message = "Cancelamento solicitado"
-        return "🛑 Cancelamento solicitado", _as_pretty_json(self.snapshot())
+        snap = self.snapshot()
+        return "🛑 Cancelamento solicitado", _as_pretty_json(snap), _format_segments_upload_progress(snap)
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -189,7 +222,7 @@ class SegmentsUploadSession:
             "timestamp": int(time.time()),
         }
 
-    def status(self) -> tuple[str, str]:
+    def status(self) -> tuple[str, str, str]:
         snap = self.snapshot()
         state = snap.get("status", "idle")
         if state == "running":
@@ -206,29 +239,34 @@ class SegmentsUploadSession:
             msg = "🛑 Cancelando upload..."
         else:
             msg = "ℹ️ Pronto"
-        return msg, _as_pretty_json(snap)
+        return msg, _as_pretty_json(snap), _format_segments_upload_progress(snap)
 
 
 _SEGMENTS_UPLOAD_SESSION = SegmentsUploadSession()
 
 
-def _start_segments_upload(dataset_repo: str, archive_path: str | None, token: str, batch_size: float) -> tuple[str, str]:
+def _start_segments_upload(
+    dataset_repo: str,
+    archive_path: str | None,
+    token: str,
+    batch_size: float,
+) -> tuple[str, str, str]:
     return _SEGMENTS_UPLOAD_SESSION.start(dataset_repo, archive_path, token, int(batch_size))
 
 
-def _pause_segments_upload() -> tuple[str, str]:
+def _pause_segments_upload() -> tuple[str, str, str]:
     return _SEGMENTS_UPLOAD_SESSION.pause()
 
 
-def _resume_segments_upload() -> tuple[str, str]:
+def _resume_segments_upload() -> tuple[str, str, str]:
     return _SEGMENTS_UPLOAD_SESSION.resume()
 
 
-def _cancel_segments_upload() -> tuple[str, str]:
+def _cancel_segments_upload() -> tuple[str, str, str]:
     return _SEGMENTS_UPLOAD_SESSION.cancel()
 
 
-def _refresh_segments_upload_status() -> tuple[str, str]:
+def _refresh_segments_upload_status() -> tuple[str, str, str]:
     return _SEGMENTS_UPLOAD_SESSION.status()
 
 
@@ -281,6 +319,7 @@ def build_upload_app() -> gr.Blocks:
                 segments_upload_cancel = gr.Button("Cancelar", variant="stop")
                 segments_upload_refresh = gr.Button("Atualizar Status", variant="secondary")
             segments_upload_status = gr.Markdown(value="Pronto")
+            segments_upload_progress = gr.Markdown(value="**Progresso:** aguardando inicio")
             segments_upload_result = gr.Code(label="Resultado JSON", language="json")
 
         with gr.Accordion("Configuracao avancada", open=False):
@@ -416,31 +455,31 @@ def build_upload_app() -> gr.Blocks:
         segments_upload_start.click(
             fn=_start_segments_upload,
             inputs=[segments_upload_repo, segments_upload_file, segments_upload_token, segments_upload_batch_size],
-            outputs=[segments_upload_status, segments_upload_result],
+            outputs=[segments_upload_status, segments_upload_result, segments_upload_progress],
         )
 
         segments_upload_pause.click(
             fn=_pause_segments_upload,
             inputs=[],
-            outputs=[segments_upload_status, segments_upload_result],
+            outputs=[segments_upload_status, segments_upload_result, segments_upload_progress],
         )
 
         segments_upload_resume.click(
             fn=_resume_segments_upload,
             inputs=[],
-            outputs=[segments_upload_status, segments_upload_result],
+            outputs=[segments_upload_status, segments_upload_result, segments_upload_progress],
         )
 
         segments_upload_cancel.click(
             fn=_cancel_segments_upload,
             inputs=[],
-            outputs=[segments_upload_status, segments_upload_result],
+            outputs=[segments_upload_status, segments_upload_result, segments_upload_progress],
         )
 
         segments_upload_refresh.click(
             fn=_refresh_segments_upload_status,
             inputs=[],
-            outputs=[segments_upload_status, segments_upload_result],
+            outputs=[segments_upload_status, segments_upload_result, segments_upload_progress],
         )
 
         upload_button.click(
