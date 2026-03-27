@@ -72,15 +72,17 @@ def _format_segments_upload_progress(snapshot: dict[str, Any]) -> str:
 
     if pending_total > 0:
         percent = min(100.0, (processed_pending / pending_total) * 100.0)
+        filled = int(percent // 5)
+        bar = "█" * filled + "░" * (20 - filled)
         return (
-            f"**Progresso:** {percent:.1f}%  |  "
+            f"**[{bar}] {percent:.1f}%**\n"
             f"Processados: {processed_pending}/{pending_total}  |  "
             f"Enviados: {uploaded}  |  Falhas: {failed}  |  Ja existentes: {skipped}"
         )
 
     total_files = int(progress.get("total_files") or result.get("total_files") or 0)
     if total_files > 0:
-        return f"**Progresso:** preparando upload ({total_files} arquivos detectados)"
+        return f"**[░░░░░░░░░░░░░░░░░░░░] 0.0%**\nPreparando upload ({total_files} arquivos detectados)"
 
     return "**Progresso:** aguardando inicio"
 
