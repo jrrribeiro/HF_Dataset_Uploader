@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import zipfile
 from pathlib import Path
@@ -38,6 +39,29 @@ def _resolve_segments_root(
     return None, None
 
 
+def _pick_local_folder(current_value: str) -> tuple[str, str]:
+    if os.getenv("SPACE_ID"):
+        return current_value or "", "Selecao de pasta local indisponivel no Space. Use execucao local."
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        return current_value or "", f"Nao foi possivel abrir seletor local: {exc}"
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(title="Selecione a pasta raiz de segmentos")
+        root.destroy()
+        if selected:
+            return selected, "Pasta local selecionada."
+        return current_value or "", "Selecao de pasta cancelada."
+    except Exception as exc:
+        return current_value or "", f"Erro ao selecionar pasta local: {exc}"
+
+
 def build_upload_app() -> gr.Blocks:
     with gr.Blocks(title="BirdNET Segments Uploader") as demo:
         gr.Markdown("# BirdNET Segments Uploader")
@@ -55,6 +79,7 @@ def build_upload_app() -> gr.Blocks:
             label="Pasta raiz de segmentos",
             placeholder=r"ex: C:\dados\BirdNET Segments",
         )
+        pick_segments_button = gr.Button("Selecionar pasta local", variant="secondary")
         segments_zip = gr.File(
             label="ZIP da pasta de segmentos (use no Space)",
             file_types=[".zip"],
@@ -193,6 +218,12 @@ def build_upload_app() -> gr.Blocks:
             fn=run_dry_run,
             inputs=[project_slug, dataset_repo, detections_csv, segments_root, segments_zip, report_file],
             outputs=[status, result_json],
+        )
+
+        pick_segments_button.click(
+            fn=_pick_local_folder,
+            inputs=[segments_root],
+            outputs=[segments_root, status],
         )
 
         upload_button.click(
