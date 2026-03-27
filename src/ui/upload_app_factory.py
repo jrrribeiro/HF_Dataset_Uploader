@@ -1,4 +1,6 @@
 import json
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,23 @@ def _build_api(token: str) -> HfApi:
     return HfApi()
 
 
+def _resolve_segments_root(
+    segments_path: str,
+    segments_zip_path: str | None,
+) -> tuple[Path | None, tempfile.TemporaryDirectory[str] | None]:
+    clean_segments_path = (segments_path or "").strip()
+    if clean_segments_path and Path(clean_segments_path).exists():
+        return Path(clean_segments_path), None
+
+    if segments_zip_path and Path(segments_zip_path).exists():
+        temp_dir = tempfile.TemporaryDirectory()
+        with zipfile.ZipFile(segments_zip_path) as archive:
+            archive.extractall(temp_dir.name)
+        return Path(temp_dir.name), temp_dir
+
+    return None, None
+
+
 def build_upload_app() -> gr.Blocks:
     with gr.Blocks(title="BirdNET Segments Uploader") as demo:
         gr.Markdown("# BirdNET Segments Uploader")
@@ -35,6 +54,15 @@ def build_upload_app() -> gr.Blocks:
         segments_root = gr.Textbox(
             label="Pasta raiz de segmentos",
             placeholder=r"ex: C:\dados\BirdNET Segments",
+        )
+        segments_zip = gr.File(
+            label="ZIP da pasta de segmentos (use no Space)",
+            file_types=[".zip"],
+            type="filepath",
+        )
+        gr.Markdown(
+            "No Hugging Face Space, caminho local do seu PC (ex: C:/...) nao existe no servidor. "
+            "Use o campo ZIP para enviar a pasta de segmentos."
         )
 
         with gr.Accordion("Configuracao avancada", open=False):
@@ -70,6 +98,7 @@ def build_upload_app() -> gr.Blocks:
             repo: str,
             csv_path: str | None,
             segments_path: str,
+            segments_zip_path: str | None,
             report_path: str,
         ) -> tuple[str, str]:
             project = (project or "").strip()
@@ -79,14 +108,15 @@ def build_upload_app() -> gr.Blocks:
             if not csv_path:
                 return "❌ Selecione o CSV de deteccoes", "{}"
 
-            if not segments_path or not Path(segments_path).exists():
-                return "❌ Pasta de segmentos invalida", "{}"
+            segments_root, temp_dir = _resolve_segments_root(segments_path, segments_zip_path)
+            if segments_root is None:
+                return "❌ Pasta de segmentos invalida. No Space, envie ZIP da pasta.", "{}"
 
             try:
                 result = run_ingest_segments_dry_run(
                     project_slug=project,
                     detections_csv=csv_path,
-                    segments_root=segments_path,
+                    segments_root=str(segments_root),
                 )
                 if report_path.strip():
                     Path(report_path).write_text(_as_pretty_json(result), encoding="utf-8")
@@ -99,12 +129,16 @@ def build_upload_app() -> gr.Blocks:
                 return summary, _as_pretty_json(result)
             except Exception as exc:
                 return f"❌ Dry-run falhou: {exc}", "{}"
+            finally:
+                if temp_dir is not None:
+                    temp_dir.cleanup()
 
         def run_upload(
             project: str,
             repo: str,
             csv_path: str | None,
             segments_path: str,
+            segments_zip_path: str | None,
             token: str,
             batch: float,
             shard: float,
@@ -121,8 +155,10 @@ def build_upload_app() -> gr.Blocks:
                 return "❌ Informe dataset repo no formato owner/repo", "{}"
             if not csv_path:
                 return "❌ Selecione o CSV de deteccoes", "{}"
-            if not segments_path or not Path(segments_path).exists():
-                return "❌ Pasta de segmentos invalida", "{}"
+
+            segments_root, temp_dir = _resolve_segments_root(segments_path, segments_zip_path)
+            if segments_root is None:
+                return "❌ Pasta de segmentos invalida. No Space, envie ZIP da pasta.", "{}"
 
             try:
                 api = _build_api(token)
@@ -131,7 +167,7 @@ def build_upload_app() -> gr.Blocks:
                     project_slug=project,
                     dataset_repo=repo,
                     detections_csv=csv_path,
-                    segments_root=segments_path,
+                    segments_root=str(segments_root),
                     batch_size=int(batch),
                     shard_size=int(shard),
                     max_retries=int(retries),
@@ -149,10 +185,13 @@ def build_upload_app() -> gr.Blocks:
                 return summary, _as_pretty_json(result)
             except Exception as exc:
                 return f"❌ Upload falhou: {exc}", "{}"
+            finally:
+                if temp_dir is not None:
+                    temp_dir.cleanup()
 
         dry_run_button.click(
             fn=run_dry_run,
-            inputs=[project_slug, dataset_repo, detections_csv, segments_root, report_file],
+            inputs=[project_slug, dataset_repo, detections_csv, segments_root, segments_zip, report_file],
             outputs=[status, result_json],
         )
 
@@ -163,6 +202,7 @@ def build_upload_app() -> gr.Blocks:
                 dataset_repo,
                 detections_csv,
                 segments_root,
+                segments_zip,
                 hf_token,
                 batch_size,
                 shard_size,
