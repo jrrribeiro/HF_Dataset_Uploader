@@ -9,7 +9,7 @@ from typing import Any
 import gradio as gr
 from huggingface_hub import HfApi
 
-from cli.hf_dataset_cli import ingest_segments_to_hf
+from cli.hf_dataset_cli import ensure_project_dataset_structure, ingest_segments_to_hf, verify_project
 
 
 def _build_api(token: str) -> HfApi:
@@ -317,15 +317,88 @@ def _run_ingestion(
             temp_dir.cleanup()
 
 
+def _setup_dataset_repo(
+    project_slug: str,
+    dataset_repo: str,
+    token: str,
+    visibility: str,
+) -> tuple[str, str, str, str]:
+    project = (project_slug or "").strip()
+    repo = (dataset_repo or "").strip()
+    visibility_value = (visibility or "Public").strip().lower()
+
+    if not project:
+        return "❌ Provide the project slug", "", "", ""
+    if not repo or "/" not in repo:
+        return "❌ Provide dataset repo in owner/repo format", "", "", ""
+
+    try:
+        api = _build_api(token)
+        create_private_repo = visibility_value == "private"
+        ensure_result = ensure_project_dataset_structure(
+            api=api,
+            project_slug=project,
+            dataset_repo=repo,
+            create_private_repo=create_private_repo,
+        )
+        verify_result = verify_project(api=api, project_slug=project, dataset_repo=repo)
+
+        if not verify_result.get("ok"):
+            errors = verify_result.get("errors") or []
+            details = "; ".join(str(item) for item in errors[:2]) if errors else "Unknown verification error"
+            return f"❌ Setup completed with verification issues: {details}", repo, repo, project
+
+        created = int(len(ensure_result.get("created_paths") or []))
+        summary = (
+            "✅ Dataset repo ready | "
+            f"Repo: {repo} | "
+            f"Created/updated paths: {created} | "
+            f"Total files: {verify_result.get('total_files', 0)}"
+        )
+        return summary, repo, repo, project
+    except Exception as exc:
+        message = str(exc)
+        lowered = message.lower()
+        if "401" in lowered or "unauthorized" in lowered:
+            return "❌ Authentication failed. Provide a valid HF token.", "", "", ""
+        if "403" in lowered or "forbidden" in lowered:
+            return "❌ Permission denied. Check write access to this dataset repo.", "", "", ""
+        if "404" in lowered or "not found" in lowered:
+            return "❌ Dataset repo not found and could not be created. Check owner/repo.", "", "", ""
+        return f"❌ Setup failed: {exc}", "", "", ""
+
+
 def build_upload_app() -> gr.Blocks:
     with gr.Blocks(title="BirdNET Dataset Uploader") as demo:
         gr.Markdown("# BirdNET Dataset Uploader")
         gr.Markdown(
-            "Choose one option below. Option A uploads only audio segments first. "
-            "Option B ingests detections CSV + segments into your dataset in one run."
+            "Start in Dataset Repo (HF) to initialize your project repository with the recommended structure. "
+            "Then use Option A or Option B."
         )
 
         with gr.Tabs():
+            with gr.Tab("Dataset Repo (HF)"):
+                gr.Markdown(
+                    "Set up your Hugging Face dataset repository with the standard BirdNET structure. "
+                    "This is the recommended first step for all projects."
+                )
+                with gr.Row():
+                    setup_project_slug = gr.Textbox(label="Project Slug", placeholder="e.g. ppbio-aiuaba")
+                    setup_dataset_repo = gr.Textbox(label="Dataset Repo (HF)", placeholder="owner/repo-dataset")
+                with gr.Row():
+                    setup_hf_token = gr.Textbox(
+                        label="HF Token (optional)",
+                        type="password",
+                        placeholder="Leave blank to use authenticated environment session",
+                    )
+                    setup_visibility = gr.Radio(
+                        label="Repository Visibility",
+                        choices=["Public", "Private"],
+                        value="Public",
+                    )
+                setup_button = gr.Button("Setup Repository", variant="primary")
+                setup_status = gr.Markdown(value="ℹ️ Ready")
+
             with gr.Tab("Option A - Upload Segments Only"):
                 gr.Markdown(
                     "Upload a compressed segments archive to your Hugging Face dataset. "
@@ -373,6 +446,12 @@ def build_upload_app() -> gr.Blocks:
                 )
                 run_ingestion_button = gr.Button("Run Ingestion", variant="primary")
                 ingestion_status = gr.Markdown(value="ℹ️ Ready")
+
+        setup_button.click(
+            fn=_setup_dataset_repo,
+            inputs=[setup_project_slug, setup_dataset_repo, setup_hf_token, setup_visibility],
+            outputs=[setup_status, segments_upload_repo, dataset_repo, project_slug],
+        )
 
         segments_upload_start.click(
             fn=_start_segments_upload,

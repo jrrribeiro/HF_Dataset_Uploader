@@ -27,18 +27,22 @@ This app centralizes ingestion for bioacoustics projects by:
 
 ## Usability
 
-The app supports two execution modes:
+The app supports a setup-first workflow:
 
-1. Dry-run mode
-- validates matching quality before upload
-- reports matched, unmatched, and ambiguous rows
+1. Dataset Repo (HF)
+- initialize or repair the dataset repository structure
+- choose repository visibility (Public by default, Private optional)
+- prefill Dataset Repo (HF) and Project Slug for the next tabs
 
-2. Upload mode
-- performs actual upload to Hugging Face Dataset repo
-- supports retry/backoff, resume state, and batch control
+2. Option A - Upload Segments Only
+- upload compressed segments archive to the dataset repo
+- supports pause/resume/cancel with progress tracking
+
+3. Option B - Ingest CSV + Segments
+- ingest detections CSV + segments archive in one run
 - updates index and manifest artifacts for downstream consumers
 
-This flow reduces manual errors and gives operators confidence before publishing data.
+This flow reduces manual errors and keeps project setup consistent across teams.
 
 ## Upload Strategies
 
