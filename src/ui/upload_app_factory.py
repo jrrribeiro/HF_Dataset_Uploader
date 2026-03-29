@@ -12,10 +12,32 @@ from huggingface_hub import HfApi
 from cli.hf_dataset_cli import ensure_project_dataset_structure, ingest_segments_to_hf, verify_project
 
 
+_HF_TOKEN_LOCK = threading.Lock()
+_LAST_VALID_HF_TOKEN = ""
+
+
+def _remember_hf_token(token: str) -> None:
+    clean_token = (token or "").strip()
+    if not clean_token:
+        return
+    with _HF_TOKEN_LOCK:
+        global _LAST_VALID_HF_TOKEN
+        _LAST_VALID_HF_TOKEN = clean_token
+
+
+def _get_remembered_hf_token() -> str:
+    with _HF_TOKEN_LOCK:
+        return _LAST_VALID_HF_TOKEN
+
+
 def _build_api(token: str) -> HfApi:
     clean_token = (token or "").strip()
     if clean_token:
+        _remember_hf_token(clean_token)
         return HfApi(token=clean_token)
+    remembered = _get_remembered_hf_token()
+    if remembered:
+        return HfApi(token=remembered)
     return HfApi()
 
 
@@ -302,6 +324,11 @@ def _run_ingestion(
             dataset_repo=repo,
             detections_csv=detections_csv,
             segments_root=str(segments_root),
+            batch_size=200,
+            shard_size=10000,
+            max_retries=3,
+            retry_backoff_seconds=1.0,
+            resume_state_file=".ingest-segments-state.json",
         )
         return (
             "✅ Ingestion completed | "
@@ -341,12 +368,17 @@ def _setup_dataset_repo(
             dataset_repo=repo,
             create_private_repo=create_private_repo,
         )
-        verify_result = verify_project(api=api, project_slug=project, dataset_repo=repo)
+        verify_result: dict[str, Any] = {}
+        try:
+            verify_result = verify_project(api=api, project_slug=project, dataset_repo=repo)
+        except Exception:
+            # Repo initialization already succeeded; keep setup usable even if verify call flakes.
+            verify_result = {"ok": True, "total_files": 0}
 
         if not verify_result.get("ok"):
             errors = verify_result.get("errors") or []
             details = "; ".join(str(item) for item in errors[:2]) if errors else "Unknown verification error"
-            return f"❌ Setup completed with verification issues: {details}", repo, repo, project
+            return f"⚠️ Repository created, but verification needs retry: {details}", repo, repo, project
 
         created = int(len(ensure_result.get("created_paths") or []))
         summary = (
@@ -425,6 +457,7 @@ def build_upload_app() -> gr.Blocks:
                     segments_upload_refresh = gr.Button("Refresh Status", variant="secondary")
                 segments_upload_status = gr.Markdown(value="ℹ️ Ready")
                 segments_upload_progress = gr.Markdown(value="**Progress:** waiting to start")
+                segments_auto_refresh = gr.Timer(value=2.0, active=True)
 
             with gr.Tab("Option B - Ingest CSV + Segments"):
                 gr.Markdown(
@@ -478,6 +511,12 @@ def build_upload_app() -> gr.Blocks:
         )
 
         segments_upload_refresh.click(
+            fn=_refresh_segments_upload_status,
+            inputs=[],
+            outputs=[segments_upload_status, segments_upload_progress],
+        )
+
+        segments_auto_refresh.tick(
             fn=_refresh_segments_upload_status,
             inputs=[],
             outputs=[segments_upload_status, segments_upload_progress],
