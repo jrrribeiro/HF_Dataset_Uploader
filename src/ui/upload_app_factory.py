@@ -151,13 +151,16 @@ def _render_upload_snapshot(
 
     status_changed = status_text != (previous_status or "")
     progress_changed = progress_text != (previous_progress or "")
-    
+
     status_out: Any = status_text if status_changed else gr.skip()
     progress_out: Any = progress_text if progress_changed else gr.skip()
-    
-    # Only update timer state if actually running changed, to avoid unnecessary updates
-    timer_update = gr.update(active=running) if running or (previous_status and "running" in previous_status.lower()) else gr.skip()
-    
+
+    # Avoid updating Timer while running because repeated Timer updates can trigger UI flicker.
+    # Start handlers explicitly activate the timer; refresh handlers only deactivate on terminal states.
+    timer_update: Any = gr.skip()
+    if not running and snapshot.get("status") in {"completed", "failed", "cancelled", "idle"}:
+        timer_update = gr.update(active=False)
+
     return status_out, progress_out, timer_update, status_text, progress_text
 
 
@@ -337,7 +340,12 @@ def _start_segments_upload_ui(
     status_text, progress_text = _start_segments_upload(dataset_repo, archive_path, token, batch_size)
     if status_text.startswith("❌"):
         return status_text, progress_text, gr.update(active=False), status_text, progress_text
-    return _render_upload_snapshot(_SEGMENTS_UPLOAD_SESSION.snapshot(), previous_status, previous_progress)
+    status_out, progress_out, _timer_out, new_status, new_progress = _render_upload_snapshot(
+        _SEGMENTS_UPLOAD_SESSION.snapshot(),
+        previous_status,
+        previous_progress,
+    )
+    return status_out, progress_out, gr.update(active=True), new_status, new_progress
 
 
 def _pause_segments_upload_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
@@ -549,7 +557,15 @@ def _start_ingestion_ui(
     previous_progress: str,
 ) -> tuple[Any, Any, dict[str, Any], str, str]:
     _INGESTION_SESSION.start(project_slug, dataset_repo, detections_csv, segments_zip_path, token)
-    return _render_upload_snapshot(_INGESTION_SESSION.snapshot(), previous_status, previous_progress)
+    snapshot = _INGESTION_SESSION.snapshot()
+    status_out, progress_out, _timer_out, new_status, new_progress = _render_upload_snapshot(
+        snapshot,
+        previous_status,
+        previous_progress,
+    )
+    if snapshot.get("is_running"):
+        return status_out, progress_out, gr.update(active=True), new_status, new_progress
+    return status_out, progress_out, gr.update(active=False), new_status, new_progress
 
 
 def _pause_ingestion_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
