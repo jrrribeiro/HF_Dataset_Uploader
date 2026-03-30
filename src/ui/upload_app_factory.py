@@ -1,3 +1,4 @@
+import os
 import tarfile
 import tempfile
 import threading
@@ -14,6 +15,37 @@ from cli.hf_dataset_cli import ensure_project_dataset_structure, ingest_segments
 
 _HF_TOKEN_LOCK = threading.Lock()
 _LAST_VALID_HF_TOKEN = ""
+
+_STATUS_REFRESH_SECONDS = max(0.1, float(os.getenv("BIRDNET_STATUS_REFRESH_SECONDS", "0.25")))
+_PROGRESS_PERCENT_STEP = max(0.1, float(os.getenv("BIRDNET_PROGRESS_PERCENT_STEP", "1.0")))
+_SOLID_STATUS_CSS = """
+#segments-upload-status, #segments-upload-status *,
+#segments-upload-progress, #segments-upload-progress *,
+#ingestion-status, #ingestion-status *,
+#ingestion-progress, #ingestion-progress * {
+    color: var(--body-text-color) !important;
+    opacity: 1 !important;
+}
+
+#segments-upload-status p, #segments-upload-progress p,
+#ingestion-status p, #ingestion-progress p {
+    margin: 0 !important;
+}
+
+#segments-upload-progress strong,
+#ingestion-progress strong {
+    color: var(--body-text-color) !important;
+    font-weight: 700;
+}
+"""
+
+
+def _quantize_percent(raw_percent: float) -> float:
+        step = _PROGRESS_PERCENT_STEP
+        if step <= 0:
+                return raw_percent
+        quantized = round(raw_percent / step) * step
+        return max(0.0, min(100.0, quantized))
 
 
 def _remember_hf_token(token: str) -> None:
@@ -91,7 +123,8 @@ def _format_segments_upload_progress(snapshot: dict[str, Any]) -> str:
         if processed_pending == 0 and state in {"completed", "failed", "cancelled"}:
             processed_pending = min(pending_total, uploaded + failed)
 
-        percent = min(100.0, (processed_pending / pending_total) * 100.0)
+        raw_percent = min(100.0, (processed_pending / pending_total) * 100.0)
+        percent = _quantize_percent(raw_percent)
         filled = int(percent // 5)
         bar = "█" * filled + "░" * (20 - filled)
         return (
@@ -680,6 +713,7 @@ def _setup_dataset_repo(
 
 def build_upload_app() -> gr.Blocks:
     with gr.Blocks(title="BirdNET Dataset Uploader") as demo:
+        gr.HTML(f"<style>{_SOLID_STATUS_CSS}</style>")
         gr.Markdown("# BirdNET Dataset Uploader")
         gr.Markdown(
             "Start in Dataset Repo (HF) to initialize your project repository with the recommended structure. "
@@ -733,9 +767,12 @@ def build_upload_app() -> gr.Blocks:
                     segments_upload_resume = gr.Button("Resume", variant="secondary")
                     segments_upload_cancel = gr.Button("Cancel", variant="stop")
                     segments_upload_refresh = gr.Button("Refresh Status", variant="secondary")
-                segments_upload_status = gr.Markdown(value="ℹ️ Ready")
-                segments_upload_progress = gr.Markdown(value="**Progress:** waiting to start")
-                segments_auto_refresh = gr.Timer(value=0.1, active=False)
+                segments_upload_status = gr.Markdown(value="ℹ️ Ready", elem_id="segments-upload-status")
+                segments_upload_progress = gr.Markdown(
+                    value="**Progress:** waiting to start",
+                    elem_id="segments-upload-progress",
+                )
+                segments_auto_refresh = gr.Timer(value=_STATUS_REFRESH_SECONDS, active=False)
                 segments_last_status_state = gr.State(value="")
                 segments_last_progress_state = gr.State(value="")
 
@@ -763,9 +800,12 @@ def build_upload_app() -> gr.Blocks:
                     ingestion_resume = gr.Button("Resume", variant="secondary")
                     ingestion_cancel = gr.Button("Cancel", variant="stop")
                     ingestion_refresh = gr.Button("Refresh Status", variant="secondary")
-                ingestion_status = gr.Markdown(value="ℹ️ Ready")
-                ingestion_progress = gr.Markdown(value="**Progress:** waiting to start")
-                ingestion_auto_refresh = gr.Timer(value=0.1, active=False)
+                ingestion_status = gr.Markdown(value="ℹ️ Ready", elem_id="ingestion-status")
+                ingestion_progress = gr.Markdown(
+                    value="**Progress:** waiting to start",
+                    elem_id="ingestion-progress",
+                )
+                ingestion_auto_refresh = gr.Timer(value=_STATUS_REFRESH_SECONDS, active=False)
                 ingestion_last_status_state = gr.State(value="")
                 ingestion_last_progress_state = gr.State(value="")
 
