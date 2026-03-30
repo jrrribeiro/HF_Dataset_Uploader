@@ -79,6 +79,7 @@ def _resolve_segments_root(
 def _format_segments_upload_progress(snapshot: dict[str, Any]) -> str:
     progress = snapshot.get("progress", {}) if isinstance(snapshot, dict) else {}
     result = snapshot.get("result", {}) if isinstance(snapshot, dict) else {}
+    state = str(snapshot.get("status") or "")
 
     pending_total = int(progress.get("pending_total") or result.get("pending_files") or 0)
     processed_pending = int(progress.get("processed_pending") or 0)
@@ -87,6 +88,9 @@ def _format_segments_upload_progress(snapshot: dict[str, Any]) -> str:
     skipped = int(progress.get("skipped_existing") or result.get("skipped_existing") or 0)
 
     if pending_total > 0:
+        if processed_pending == 0 and state in {"completed", "failed", "cancelled"}:
+            processed_pending = min(pending_total, uploaded + failed)
+
         percent = min(100.0, (processed_pending / pending_total) * 100.0)
         filled = int(percent // 5)
         bar = "█" * filled + "░" * (20 - filled)
@@ -111,7 +115,10 @@ def _format_segments_upload_status(snapshot: dict[str, Any]) -> str:
         uploaded = int(result.get("uploaded") or 0)
         failed = int(result.get("failed") or 0)
         skipped = int(result.get("skipped_existing") or 0)
-        return f"✅ Segments upload completed | Uploaded: {uploaded} | Failed: {failed} | Already existed: {skipped}"
+        base = f"✅ Segments upload completed | Uploaded: {uploaded} | Failed: {failed} | Already existed: {skipped}"
+        if message and message not in {"Upload completed", "Ingestion completed"}:
+            return f"{base} | {message}"
+        return base
     if state == "failed":
         return f"❌ Segments upload failed | {message}"
     if state == "cancelled":
@@ -123,6 +130,21 @@ def _format_segments_upload_status(snapshot: dict[str, Any]) -> str:
     if state == "running":
         return "⏳ Segments upload in progress"
     return "ℹ️ Ready"
+
+
+def _render_upload_snapshot(
+    snapshot: dict[str, Any],
+    previous_status: str,
+    previous_progress: str,
+) -> tuple[Any, Any, dict[str, Any], str, str]:
+    status_text = _format_segments_upload_status(snapshot)
+    progress_text = _format_segments_upload_progress(snapshot)
+    running = bool(snapshot.get("is_running"))
+
+    status_out: Any = status_text if status_text != (previous_status or "") else gr.skip()
+    progress_out: Any = progress_text if progress_text != (previous_progress or "") else gr.skip()
+    timer_update = gr.update(active=running)
+    return status_out, progress_out, timer_update, status_text, progress_text
 
 
 class SegmentsUploadSession:
@@ -270,78 +292,264 @@ class SegmentsUploadSession:
 _SEGMENTS_UPLOAD_SESSION = SegmentsUploadSession()
 
 
+def _require_hf_token(token: str) -> str:
+    clean = (token or "").strip()
+    if not clean:
+        raise ValueError("HF token is required")
+    return clean
+
+
 def _start_segments_upload(
     dataset_repo: str,
     archive_path: str | None,
     token: str,
     batch_size: float,
 ) -> tuple[str, str]:
-    return _SEGMENTS_UPLOAD_SESSION.start(dataset_repo, archive_path, token, int(batch_size))
+    try:
+        clean_token = _require_hf_token(token)
+    except ValueError as exc:
+        return f"❌ {exc}", "**Progress:** waiting to start"
+    return _SEGMENTS_UPLOAD_SESSION.start(dataset_repo, archive_path, clean_token, int(batch_size))
 
 
-def _pause_segments_upload() -> tuple[str, str]:
-    return _SEGMENTS_UPLOAD_SESSION.pause()
+def _start_segments_upload_ui(
+    dataset_repo: str,
+    archive_path: str | None,
+    token: str,
+    batch_size: float,
+    previous_status: str,
+    previous_progress: str,
+) -> tuple[Any, Any, dict[str, Any], str, str]:
+    status_text, progress_text = _start_segments_upload(dataset_repo, archive_path, token, batch_size)
+    if status_text.startswith("❌"):
+        return status_text, progress_text, gr.update(active=False), status_text, progress_text
+    return _render_upload_snapshot(_SEGMENTS_UPLOAD_SESSION.snapshot(), previous_status, previous_progress)
 
 
-def _resume_segments_upload() -> tuple[str, str]:
-    return _SEGMENTS_UPLOAD_SESSION.resume()
+def _pause_segments_upload_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _ = _SEGMENTS_UPLOAD_SESSION.pause()
+    return _render_upload_snapshot(_SEGMENTS_UPLOAD_SESSION.snapshot(), previous_status, previous_progress)
 
 
-def _cancel_segments_upload() -> tuple[str, str]:
-    return _SEGMENTS_UPLOAD_SESSION.cancel()
+def _resume_segments_upload_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _ = _SEGMENTS_UPLOAD_SESSION.resume()
+    return _render_upload_snapshot(_SEGMENTS_UPLOAD_SESSION.snapshot(), previous_status, previous_progress)
 
 
-def _refresh_segments_upload_status() -> tuple[str, str]:
-    return _SEGMENTS_UPLOAD_SESSION.status()
+def _cancel_segments_upload_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _ = _SEGMENTS_UPLOAD_SESSION.cancel()
+    return _render_upload_snapshot(_SEGMENTS_UPLOAD_SESSION.snapshot(), previous_status, previous_progress)
 
 
-def _run_ingestion(
+def _refresh_segments_upload_status_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    return _render_upload_snapshot(_SEGMENTS_UPLOAD_SESSION.snapshot(), previous_status, previous_progress)
+
+
+class IngestionSession:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._pause = False
+        self._cancel = False
+        self._status = "idle"
+        self._message = "Ready"
+        self._progress: dict[str, Any] = {}
+        self._result: dict[str, Any] = {}
+        self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
+
+    def _is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _on_progress(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self._progress = payload
+
+    def _should_pause(self) -> bool:
+        with self._lock:
+            return self._pause
+
+    def _should_cancel(self) -> bool:
+        with self._lock:
+            return self._cancel
+
+    def start(
+        self,
+        project_slug: str,
+        dataset_repo: str,
+        detections_csv: str | None,
+        segments_zip_path: str | None,
+        token: str,
+    ) -> None:
+        project = (project_slug or "").strip()
+        repo = (dataset_repo or "").strip()
+
+        with self._lock:
+            if self._is_running():
+                self._status = "running"
+                self._message = "Ingestion already running"
+                return
+
+        if not project:
+            with self._lock:
+                self._status = "failed"
+                self._message = "Provide the project slug"
+            return
+        if not repo or "/" not in repo:
+            with self._lock:
+                self._status = "failed"
+                self._message = "Provide dataset repo in owner/repo format"
+            return
+        if not detections_csv:
+            with self._lock:
+                self._status = "failed"
+                self._message = "Upload the detections CSV"
+            return
+
+        try:
+            clean_token = _require_hf_token(token)
+        except ValueError as exc:
+            with self._lock:
+                self._status = "failed"
+                self._message = str(exc)
+            return
+
+        segments_root, temp_dir = _resolve_segments_root(segments_zip_path)
+        if segments_root is None or temp_dir is None:
+            with self._lock:
+                self._status = "failed"
+                self._message = "Invalid segments archive. Upload a .tar, .tar.gz, or .zip file"
+            return
+
+        with self._lock:
+            self._pause = False
+            self._cancel = False
+            self._status = "running"
+            self._message = "Ingestion started"
+            self._progress = {"event": "upload-start"}
+            self._result = {}
+            self._temp_dir = temp_dir
+
+        def worker() -> None:
+            try:
+                api = _build_api(clean_token)
+                result = ingest_segments_to_hf(
+                    api=api,
+                    project_slug=project,
+                    dataset_repo=repo,
+                    detections_csv=detections_csv,
+                    segments_root=str(segments_root),
+                    batch_size=200,
+                    shard_size=10000,
+                    max_retries=3,
+                    retry_backoff_seconds=1.0,
+                    resume_state_file=f".ingest-segments-{project}.json",
+                    should_pause=self._should_pause,
+                    should_cancel=self._should_cancel,
+                    progress_callback=self._on_progress,
+                )
+                with self._lock:
+                    self._result = result
+                    if result.get("cancelled"):
+                        self._status = "cancelled"
+                        self._message = "Ingestion cancelled"
+                    elif int(result.get("matched_rows", 0)) == 0:
+                        self._status = "completed"
+                        self._message = (
+                            "Completed with 0 matched rows. Verify segment filenames follow "
+                            "<source_stem>_<start>-<end>s_<confidence>% and are under species folders."
+                        )
+                    else:
+                        self._status = "completed"
+                        self._message = "Ingestion completed"
+            except Exception as exc:
+                with self._lock:
+                    self._status = "failed"
+                    self._message = f"Ingestion failed: {exc}"
+                    self._result = {"error": str(exc)}
+            finally:
+                with self._lock:
+                    temp = self._temp_dir
+                    self._temp_dir = None
+                if temp is not None:
+                    temp.cleanup()
+
+        self._thread = threading.Thread(target=worker, daemon=True)
+        self._thread.start()
+
+    def pause(self) -> None:
+        with self._lock:
+            if not self._is_running():
+                return
+            self._pause = True
+            self._status = "paused"
+            self._message = "Ingestion paused"
+
+    def resume(self) -> None:
+        with self._lock:
+            if not self._is_running():
+                return
+            self._pause = False
+            self._status = "running"
+            self._message = "Ingestion resumed"
+
+    def cancel(self) -> None:
+        with self._lock:
+            if not self._is_running():
+                return
+            self._cancel = True
+            self._pause = False
+            self._status = "cancelling"
+            self._message = "Cancellation requested"
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "status": self._status,
+            "message": self._message,
+            "progress": self._progress,
+            "result": {
+                "uploaded": int((self._result or {}).get("uploaded_audio_now") or 0),
+                "failed": int((self._result or {}).get("failed_uploads") or 0),
+                "skipped_existing": int((self._result or {}).get("uploaded_audio_skipped_existing") or 0),
+                "pending_files": int((self._result or {}).get("pending_audio_uploads") or 0),
+            },
+            "is_running": self._is_running(),
+            "timestamp": int(time.time()),
+        }
+
+
+_INGESTION_SESSION = IngestionSession()
+
+
+def _start_ingestion_ui(
     project_slug: str,
     dataset_repo: str,
     detections_csv: str | None,
     segments_zip_path: str | None,
     token: str,
-) -> str:
-    project = (project_slug or "").strip()
-    repo = (dataset_repo or "").strip()
+    previous_status: str,
+    previous_progress: str,
+) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _INGESTION_SESSION.start(project_slug, dataset_repo, detections_csv, segments_zip_path, token)
+    return _render_upload_snapshot(_INGESTION_SESSION.snapshot(), previous_status, previous_progress)
 
-    if not project:
-        return "❌ Provide the project slug"
-    if not repo or "/" not in repo:
-        return "❌ Provide dataset repo in owner/repo format"
-    if not detections_csv:
-        return "❌ Upload the detections CSV"
 
-    segments_root, temp_dir = _resolve_segments_root(segments_zip_path)
-    if segments_root is None:
-        return "❌ Invalid segments archive. Upload a .tar, .tar.gz, or .zip file"
+def _pause_ingestion_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _INGESTION_SESSION.pause()
+    return _render_upload_snapshot(_INGESTION_SESSION.snapshot(), previous_status, previous_progress)
 
-    try:
-        api = _build_api(token)
-        result = ingest_segments_to_hf(
-            api=api,
-            project_slug=project,
-            dataset_repo=repo,
-            detections_csv=detections_csv,
-            segments_root=str(segments_root),
-            batch_size=200,
-            shard_size=10000,
-            max_retries=3,
-            retry_backoff_seconds=1.0,
-            resume_state_file=".ingest-segments-state.json",
-        )
-        return (
-            "✅ Ingestion completed | "
-            f"Rows matched: {result['matched_rows']} | "
-            f"Uploaded now: {result['uploaded_audio_now']} | "
-            f"Skipped existing: {result['uploaded_audio_skipped_existing']} | "
-            f"Failed uploads: {result['failed_uploads']}"
-        )
-    except Exception as exc:
-        return f"❌ Ingestion failed: {exc}"
-    finally:
-        if temp_dir is not None:
-            temp_dir.cleanup()
+
+def _resume_ingestion_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _INGESTION_SESSION.resume()
+    return _render_upload_snapshot(_INGESTION_SESSION.snapshot(), previous_status, previous_progress)
+
+
+def _cancel_ingestion_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    _INGESTION_SESSION.cancel()
+    return _render_upload_snapshot(_INGESTION_SESSION.snapshot(), previous_status, previous_progress)
+
+
+def _refresh_ingestion_status_ui(previous_status: str, previous_progress: str) -> tuple[Any, Any, dict[str, Any], str, str]:
+    return _render_upload_snapshot(_INGESTION_SESSION.snapshot(), previous_status, previous_progress)
 
 
 def _setup_dataset_repo(
@@ -359,8 +567,12 @@ def _setup_dataset_repo(
     if not repo or "/" not in repo:
         return "❌ Provide dataset repo in owner/repo format", "", "", ""
 
+    clean_token = (token or "").strip()
+    if not clean_token:
+        return "❌ HF token is required", "", "", ""
+
     try:
-        api = _build_api(token)
+        api = _build_api(clean_token)
         create_private_repo = visibility_value == "private"
         ensure_result = ensure_project_dataset_structure(
             api=api,
@@ -419,9 +631,9 @@ def build_upload_app() -> gr.Blocks:
                     setup_dataset_repo = gr.Textbox(label="Dataset Repo (HF)", placeholder="owner/repo-dataset")
                 with gr.Row():
                     setup_hf_token = gr.Textbox(
-                        label="HF Token (optional)",
+                        label="HF Token",
                         type="password",
-                        placeholder="Leave blank to use authenticated environment session",
+                        placeholder="Required",
                     )
                     setup_visibility = gr.Radio(
                         label="Repository Visibility",
@@ -444,9 +656,9 @@ def build_upload_app() -> gr.Blocks:
                         type="filepath",
                     )
                 segments_upload_token = gr.Textbox(
-                    label="HF Token (optional)",
+                    label="HF Token",
                     type="password",
-                    placeholder="Leave blank to use authenticated environment session",
+                    placeholder="Required",
                 )
                 segments_upload_batch_size = gr.Number(label="Upload Batch Size", value=50, precision=0)
                 with gr.Row():
@@ -457,7 +669,9 @@ def build_upload_app() -> gr.Blocks:
                     segments_upload_refresh = gr.Button("Refresh Status", variant="secondary")
                 segments_upload_status = gr.Markdown(value="ℹ️ Ready")
                 segments_upload_progress = gr.Markdown(value="**Progress:** waiting to start")
-                segments_auto_refresh = gr.Timer(value=2.0, active=True)
+                segments_auto_refresh = gr.Timer(value=0.1, active=False)
+                segments_last_status_state = gr.State(value="")
+                segments_last_progress_state = gr.State(value="")
 
             with gr.Tab("Option B - Ingest CSV + Segments"):
                 gr.Markdown(
@@ -473,12 +687,21 @@ def build_upload_app() -> gr.Blocks:
                     type="filepath",
                 )
                 hf_token = gr.Textbox(
-                    label="HF Token (optional)",
+                    label="HF Token",
                     type="password",
-                    placeholder="Leave blank to use authenticated environment session",
+                    placeholder="Required",
                 )
-                run_ingestion_button = gr.Button("Run Ingestion", variant="primary")
+                with gr.Row():
+                    ingestion_start = gr.Button("Start Upload", variant="primary")
+                    ingestion_pause = gr.Button("Pause", variant="secondary")
+                    ingestion_resume = gr.Button("Resume", variant="secondary")
+                    ingestion_cancel = gr.Button("Cancel", variant="stop")
+                    ingestion_refresh = gr.Button("Refresh Status", variant="secondary")
                 ingestion_status = gr.Markdown(value="ℹ️ Ready")
+                ingestion_progress = gr.Markdown(value="**Progress:** waiting to start")
+                ingestion_auto_refresh = gr.Timer(value=0.1, active=False)
+                ingestion_last_status_state = gr.State(value="")
+                ingestion_last_progress_state = gr.State(value="")
 
         setup_button.click(
             fn=_setup_dataset_repo,
@@ -487,45 +710,162 @@ def build_upload_app() -> gr.Blocks:
         )
 
         segments_upload_start.click(
-            fn=_start_segments_upload,
-            inputs=[segments_upload_repo, segments_upload_file, segments_upload_token, segments_upload_batch_size],
-            outputs=[segments_upload_status, segments_upload_progress],
+            fn=_start_segments_upload_ui,
+            inputs=[
+                segments_upload_repo,
+                segments_upload_file,
+                segments_upload_token,
+                segments_upload_batch_size,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
+            outputs=[
+                segments_upload_status,
+                segments_upload_progress,
+                segments_auto_refresh,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
         )
 
         segments_upload_pause.click(
-            fn=_pause_segments_upload,
-            inputs=[],
-            outputs=[segments_upload_status, segments_upload_progress],
+            fn=_pause_segments_upload_ui,
+            inputs=[segments_last_status_state, segments_last_progress_state],
+            outputs=[
+                segments_upload_status,
+                segments_upload_progress,
+                segments_auto_refresh,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
         )
 
         segments_upload_resume.click(
-            fn=_resume_segments_upload,
-            inputs=[],
-            outputs=[segments_upload_status, segments_upload_progress],
+            fn=_resume_segments_upload_ui,
+            inputs=[segments_last_status_state, segments_last_progress_state],
+            outputs=[
+                segments_upload_status,
+                segments_upload_progress,
+                segments_auto_refresh,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
         )
 
         segments_upload_cancel.click(
-            fn=_cancel_segments_upload,
-            inputs=[],
-            outputs=[segments_upload_status, segments_upload_progress],
+            fn=_cancel_segments_upload_ui,
+            inputs=[segments_last_status_state, segments_last_progress_state],
+            outputs=[
+                segments_upload_status,
+                segments_upload_progress,
+                segments_auto_refresh,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
         )
 
         segments_upload_refresh.click(
-            fn=_refresh_segments_upload_status,
-            inputs=[],
-            outputs=[segments_upload_status, segments_upload_progress],
+            fn=_refresh_segments_upload_status_ui,
+            inputs=[segments_last_status_state, segments_last_progress_state],
+            outputs=[
+                segments_upload_status,
+                segments_upload_progress,
+                segments_auto_refresh,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
         )
 
         segments_auto_refresh.tick(
-            fn=_refresh_segments_upload_status,
-            inputs=[],
-            outputs=[segments_upload_status, segments_upload_progress],
+            fn=_refresh_segments_upload_status_ui,
+            inputs=[segments_last_status_state, segments_last_progress_state],
+            outputs=[
+                segments_upload_status,
+                segments_upload_progress,
+                segments_auto_refresh,
+                segments_last_status_state,
+                segments_last_progress_state,
+            ],
         )
 
-        run_ingestion_button.click(
-            fn=_run_ingestion,
-            inputs=[project_slug, dataset_repo, detections_csv, segments_zip, hf_token],
-            outputs=[ingestion_status],
+        ingestion_start.click(
+            fn=_start_ingestion_ui,
+            inputs=[
+                project_slug,
+                dataset_repo,
+                detections_csv,
+                segments_zip,
+                hf_token,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
+            outputs=[
+                ingestion_status,
+                ingestion_progress,
+                ingestion_auto_refresh,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
+        )
+
+        ingestion_pause.click(
+            fn=_pause_ingestion_ui,
+            inputs=[ingestion_last_status_state, ingestion_last_progress_state],
+            outputs=[
+                ingestion_status,
+                ingestion_progress,
+                ingestion_auto_refresh,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
+        )
+
+        ingestion_resume.click(
+            fn=_resume_ingestion_ui,
+            inputs=[ingestion_last_status_state, ingestion_last_progress_state],
+            outputs=[
+                ingestion_status,
+                ingestion_progress,
+                ingestion_auto_refresh,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
+        )
+
+        ingestion_cancel.click(
+            fn=_cancel_ingestion_ui,
+            inputs=[ingestion_last_status_state, ingestion_last_progress_state],
+            outputs=[
+                ingestion_status,
+                ingestion_progress,
+                ingestion_auto_refresh,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
+        )
+
+        ingestion_refresh.click(
+            fn=_refresh_ingestion_status_ui,
+            inputs=[ingestion_last_status_state, ingestion_last_progress_state],
+            outputs=[
+                ingestion_status,
+                ingestion_progress,
+                ingestion_auto_refresh,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
+        )
+
+        ingestion_auto_refresh.tick(
+            fn=_refresh_ingestion_status_ui,
+            inputs=[ingestion_last_status_state, ingestion_last_progress_state],
+            outputs=[
+                ingestion_status,
+                ingestion_progress,
+                ingestion_auto_refresh,
+                ingestion_last_status_state,
+                ingestion_last_progress_state,
+            ],
         )
 
     return demo

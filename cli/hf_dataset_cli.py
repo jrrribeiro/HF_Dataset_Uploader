@@ -221,7 +221,17 @@ def discover_segment_records(segments_root: str) -> list[SegmentFileRecord]:
             continue
 
         rel = absolute_path.relative_to(root)
-        scientific_name = rel.parts[0] if rel.parts else ""
+        rel_parts = list(rel.parts)
+        if rel_parts and rel_parts[0].strip().lower() in {"segments", "segment", "audio"}:
+            rel_parts = rel_parts[1:]
+
+        if rel_parts:
+            scientific_name = rel_parts[0]
+            normalized_relpath = Path(*rel_parts).as_posix()
+        else:
+            scientific_name = absolute_path.parent.name
+            normalized_relpath = absolute_path.name
+
         parsed = parse_segment_filename(absolute_path.name)
         if not parsed:
             continue
@@ -234,7 +244,7 @@ def discover_segment_records(segments_root: str) -> list[SegmentFileRecord]:
                 end_time=end_time,
                 confidence_pct=confidence_pct,
                 absolute_path=absolute_path,
-                relative_path=rel.as_posix(),
+                relative_path=normalized_relpath,
             )
         )
 
@@ -507,6 +517,9 @@ def ingest_segments_to_hf(
     max_retries: int,
     retry_backoff_seconds: float,
     resume_state_file: str,
+    should_pause: Callable[[], bool] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     ensure_project_dataset_structure(
         api=api,
@@ -547,17 +560,42 @@ def ingest_segments_to_hf(
             uploaded_state.add(repo_path)
             skipped_existing += 1
             continue
-        if repo_path in uploaded_state:
-            continue
+
+        # Source of truth is remote repository contents. If a path is missing in the
+        # repo, re-upload even when stale resume state says it was uploaded before.
         pending.append((local_path, repo_path))
 
     uploaded_now: set[str] = set()
     failed_now: set[str] = set()
+    cancelled = False
+
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "upload-start",
+                "total_files": len(path_to_local),
+                "pending": len(pending),
+                "skipped_existing": skipped_existing,
+            }
+        )
 
     for batch_index, batch in enumerate(_chunk_items(pending, batch_size), start=1):
         batch_uploaded = 0
         batch_failed = 0
         for local_path, repo_path in batch:
+            if should_cancel and should_cancel():
+                cancelled = True
+                break
+
+            while should_pause and should_pause():
+                time.sleep(0.5)
+                if should_cancel and should_cancel():
+                    cancelled = True
+                    break
+
+            if cancelled:
+                break
+
             try:
                 _upload_audio_with_retry(
                     api=api,
@@ -576,6 +614,18 @@ def ingest_segments_to_hf(
                 failed_now.add(repo_path)
                 batch_failed += 1
 
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "upload-progress",
+                        "uploaded": len(uploaded_now),
+                        "failed": len(failed_now),
+                        "skipped_existing": skipped_existing,
+                        "processed_pending": len(uploaded_now) + len(failed_now),
+                        "pending_total": len(pending),
+                    }
+                )
+
         print(
             json.dumps(
                 {
@@ -588,6 +638,45 @@ def ingest_segments_to_hf(
             )
         )
         _save_resume_state(state_file=state_path, uploaded=uploaded_state, failed=failed_state)
+
+        if cancelled:
+            break
+
+    if cancelled:
+        run_report = {
+            "mode": "execute",
+            "project_slug": project_slug,
+            "dataset_repo": dataset_repo,
+            "detections_csv": detections_csv,
+            "segments_root": segments_root,
+            "csv_rows_total": int(len(frame)),
+            "segments_found_total": int(match_result["segment_records_total"]),
+            "matched_rows": len(matched_rows),
+            "unmatched_rows": len(unmatched_rows),
+            "ambiguous_rows": len(ambiguous_rows),
+            "unique_audio_ids": 0,
+            "pending_audio_uploads": len(pending),
+            "uploaded_audio_now": len(uploaded_now),
+            "uploaded_audio_skipped_existing": skipped_existing,
+            "failed_uploads": len(failed_now),
+            "cancelled": True,
+            "resume_state_file": str(state_path),
+            "index_rows_written": 0,
+            "shards_written": 0,
+            "sample_unmatched": unmatched_rows[:20],
+            "sample_ambiguous": ambiguous_rows[:20],
+        }
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "upload-complete",
+                    "uploaded": len(uploaded_now),
+                    "failed": len(failed_now),
+                    "skipped_existing": skipped_existing,
+                    "cancelled": True,
+                }
+            )
+        return run_report
 
     index_frame = pd.DataFrame(matched_rows)
     if not index_frame.empty:
@@ -632,6 +721,7 @@ def ingest_segments_to_hf(
         "uploaded_audio_now": len(uploaded_now),
         "uploaded_audio_skipped_existing": skipped_existing,
         "failed_uploads": len(failed_now),
+        "cancelled": cancelled,
         "resume_state_file": str(state_path),
         "index_rows_written": len(index_frame),
         "shards_written": len(shard_metadata),
@@ -641,6 +731,18 @@ def ingest_segments_to_hf(
 
     audit_path = f"audit/ingestion-runs/{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
     _upload_text(api=api, dataset_repo=dataset_repo, path_in_repo=audit_path, content=json.dumps(run_report, indent=2))
+
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "upload-complete",
+                "uploaded": len(uploaded_now),
+                "failed": len(failed_now),
+                "skipped_existing": skipped_existing,
+                "cancelled": cancelled,
+            }
+        )
+
     return run_report
 
 
