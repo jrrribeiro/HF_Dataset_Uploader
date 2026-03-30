@@ -111,7 +111,12 @@ def _format_segments_upload_status(snapshot: dict[str, Any]) -> str:
     state = snapshot.get("status", "idle")
     message = snapshot.get("message", "Ready")
     result = snapshot.get("result", {}) if isinstance(snapshot.get("result"), dict) else {}
+    
     if state == "completed":
+        # Check if there's an initialization error even though state is completed
+        if result.get("error"):
+            return f"❌ Initialization error: {result.get('error', 'Unknown error')}"
+        
         uploaded = int(result.get("uploaded") or 0)
         failed = int(result.get("failed") or 0)
         skipped = int(result.get("skipped_existing") or 0)
@@ -120,6 +125,9 @@ def _format_segments_upload_status(snapshot: dict[str, Any]) -> str:
             return f"{base} | {message}"
         return base
     if state == "failed":
+        error_detail = result.get("error") if result.get("error") else ""
+        if error_detail:
+            return f"❌ Ingestion failed: {error_detail}"
         return f"❌ Segments upload failed | {message}"
     if state == "cancelled":
         return "🛑 Segments upload cancelled"
@@ -141,9 +149,15 @@ def _render_upload_snapshot(
     progress_text = _format_segments_upload_progress(snapshot)
     running = bool(snapshot.get("is_running"))
 
-    status_out: Any = status_text if status_text != (previous_status or "") else gr.skip()
-    progress_out: Any = progress_text if progress_text != (previous_progress or "") else gr.skip()
-    timer_update = gr.update(active=running)
+    status_changed = status_text != (previous_status or "")
+    progress_changed = progress_text != (previous_progress or "")
+    
+    status_out: Any = status_text if status_changed else gr.skip()
+    progress_out: Any = progress_text if progress_changed else gr.skip()
+    
+    # Only update timer state if actually running changed, to avoid unnecessary updates
+    timer_update = gr.update(active=running) if running or (previous_status and "running" in previous_status.lower()) else gr.skip()
+    
     return status_out, progress_out, timer_update, status_text, progress_text
 
 
@@ -464,8 +478,12 @@ class IngestionSession:
             except Exception as exc:
                 with self._lock:
                     self._status = "failed"
-                    self._message = f"Ingestion failed: {exc}"
-                    self._result = {"error": str(exc)}
+                    exc_message = str(exc)
+                    # Truncate long error messages for display
+                    if len(exc_message) > 200:
+                        exc_message = exc_message[:200] + "..."
+                    self._message = f"Ingestion failed: {exc_message}"
+                    self._result = {"error": str(exc), "matched_rows": 0, "failed_uploads": 0}
             finally:
                 with self._lock:
                     temp = self._temp_dir
@@ -511,6 +529,7 @@ class IngestionSession:
                 "failed": int((self._result or {}).get("failed_uploads") or 0),
                 "skipped_existing": int((self._result or {}).get("uploaded_audio_skipped_existing") or 0),
                 "pending_files": int((self._result or {}).get("pending_audio_uploads") or 0),
+                "error": (self._result or {}).get("error"),  # Include error message if present
             },
             "is_running": self._is_running(),
             "timestamp": int(time.time()),
@@ -574,42 +593,73 @@ def _setup_dataset_repo(
     try:
         api = _build_api(clean_token)
         create_private_repo = visibility_value == "private"
+        
+        # First, verify we have access before creating anything
+        try:
+            test_files = api.list_repo_files(repo_id=repo, repo_type="dataset")
+        except Exception as auth_exc:
+            message = str(auth_exc).lower()
+            if "401" in message or "unauthorized" in message:
+                return "❌ Authentication failed. Provide a valid HF token.", "", "", ""
+            if "403" in message or "forbidden" in message:
+                return "❌ Permission denied. Check write access to this dataset repo.", "", "", ""
+            # If repo doesn't exist, that's OK - we'll create it
+        
+        # Now create/initialize the repository
         ensure_result = ensure_project_dataset_structure(
             api=api,
             project_slug=project,
             dataset_repo=repo,
             create_private_repo=create_private_repo,
+            max_retries=3,
+            retry_delay_seconds=1.0,
         )
+        
+        # Verify repository was fully initialized
         verify_result: dict[str, Any] = {}
         try:
             verify_result = verify_project(api=api, project_slug=project, dataset_repo=repo)
-        except Exception:
-            # Repo initialization already succeeded; keep setup usable even if verify call flakes.
-            verify_result = {"ok": True, "total_files": 0}
+        except Exception as verify_exc:
+            return (
+                f"⚠️ Repository created but verification failed: {verify_exc}. "
+                f"Try running setup again or checking the repository manually.",
+                repo,
+                repo,
+                project,
+            )
 
         if not verify_result.get("ok"):
             errors = verify_result.get("errors") or []
             details = "; ".join(str(item) for item in errors[:2]) if errors else "Unknown verification error"
-            return f"⚠️ Repository created, but verification needs retry: {details}", repo, repo, project
+            return (
+                f"⚠️ Repository initialization incomplete. Errors: {details}. Please retry setup.",
+                repo,
+                repo,
+                project,
+            )
 
         created = int(len(ensure_result.get("created_paths") or []))
         summary = (
             "✅ Dataset repo ready | "
             f"Repo: {repo} | "
-            f"Created/updated paths: {created} | "
+            f"Initialized paths: {created} | "
             f"Total files: {verify_result.get('total_files', 0)}"
         )
         return summary, repo, repo, project
+        
     except Exception as exc:
-        message = str(exc)
-        lowered = message.lower()
-        if "401" in lowered or "unauthorized" in lowered:
+        message = str(exc).lower()
+        if "401" in message or "unauthorized" in message:
             return "❌ Authentication failed. Provide a valid HF token.", "", "", ""
-        if "403" in lowered or "forbidden" in lowered:
+        if "403" in message or "forbidden" in message:
             return "❌ Permission denied. Check write access to this dataset repo.", "", "", ""
-        if "404" in lowered or "not found" in lowered:
+        if "404" in message or "not found" in message:
             return "❌ Dataset repo not found and could not be created. Check owner/repo.", "", "", ""
-        return f"❌ Setup failed: {exc}", "", "", ""
+        # Include original error message for debugging
+        error_msg = str(exc)
+        if len(error_msg) > 150:
+            error_msg = error_msg[:150] + "..."
+        return f"❌ Setup failed: {error_msg}", "", "", ""
 
 
 def build_upload_app() -> gr.Blocks:

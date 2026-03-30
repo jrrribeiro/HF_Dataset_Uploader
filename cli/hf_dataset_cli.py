@@ -97,22 +97,53 @@ def ensure_project_dataset_structure(
     project_slug: str,
     dataset_repo: str,
     create_private_repo: bool,
+    max_retries: int = 3,
+    retry_delay_seconds: float = 2.0,
 ) -> dict[str, Any]:
-    api.create_repo(
-        repo_id=dataset_repo,
-        repo_type="dataset",
-        private=create_private_repo,
-        exist_ok=True,
-    )
+    """Create and initialize dataset repository structure with retry logic."""
+    import time as time_module
+    
+    # Create repository with retries
+    for attempt in range(1, max_retries + 1):
+        try:
+            api.create_repo(
+                repo_id=dataset_repo,
+                repo_type="dataset",
+                private=create_private_repo,
+                exist_ok=True,
+            )
+            break  # Success
+        except Exception as exc:
+            if attempt >= max_retries:
+                raise RuntimeError(f"Failed to create repository after {max_retries} attempts: {exc}")
+            time_module.sleep(retry_delay_seconds)
 
-    files = set(api.list_repo_files(repo_id=dataset_repo, repo_type="dataset"))
+    # List repository files (needed before uploads)
+    for attempt in range(1, max_retries + 1):
+        try:
+            files = set(api.list_repo_files(repo_id=dataset_repo, repo_type="dataset"))
+            break  # Success
+        except Exception as exc:
+            if attempt >= max_retries:
+                raise RuntimeError(f"Failed to access repository files after {max_retries} attempts: {exc}")
+            time_module.sleep(retry_delay_seconds)
+    
     created_paths: list[str] = []
 
+    # Upload placeholder files with retries
     for placeholder in REQUIRED_PLACEHOLDER_FILES:
         if placeholder not in files:
-            _upload_empty_file(api=api, dataset_repo=dataset_repo, path_in_repo=placeholder)
-            created_paths.append(placeholder)
+            for attempt in range(1, max_retries + 1):
+                try:
+                    _upload_empty_file(api=api, dataset_repo=dataset_repo, path_in_repo=placeholder)
+                    created_paths.append(placeholder)
+                    break  # Success
+                except Exception as exc:
+                    if attempt >= max_retries:
+                        raise RuntimeError(f"Failed to create {placeholder} after {max_retries} attempts: {exc}")
+                    time_module.sleep(retry_delay_seconds)
 
+    # Upload manifest with retries
     manifest_path = "manifest.json"
     if manifest_path not in files:
         manifest = {
@@ -128,8 +159,15 @@ def ensure_project_dataset_structure(
                 "shards": [],
             },
         }
-        _upload_text(api=api, dataset_repo=dataset_repo, path_in_repo=manifest_path, content=json.dumps(manifest, indent=2))
-        created_paths.append(manifest_path)
+        for attempt in range(1, max_retries + 1):
+            try:
+                _upload_text(api=api, dataset_repo=dataset_repo, path_in_repo=manifest_path, content=json.dumps(manifest, indent=2))
+                created_paths.append(manifest_path)
+                break  # Success
+            except Exception as exc:
+                if attempt >= max_retries:
+                    raise RuntimeError(f"Failed to create manifest.json after {max_retries} attempts: {exc}")
+                time_module.sleep(retry_delay_seconds)
 
     return {
         "dataset_repo": dataset_repo,
@@ -489,7 +527,10 @@ def _upload_audio_with_retry(
     max_retries: int,
     retry_backoff_seconds: float,
 ) -> None:
+    """Upload file with exponential backoff retry logic. Raises exception if all retries exhaust."""
     attempts = 0
+    last_exception = None
+    
     while True:
         attempts += 1
         try:
@@ -499,10 +540,15 @@ def _upload_audio_with_retry(
                 repo_id=dataset_repo,
                 repo_type="dataset",
             )
-            return
-        except Exception:
+            return  # Success
+        except Exception as exc:
+            last_exception = exc
             if attempts > max_retries:
-                raise
+                # Include first and last error in final exception for debugging
+                raise RuntimeError(
+                    f"Upload of {path_in_repo} failed after {max_retries} attempts. "
+                    f"Error: {str(exc)[:200]}"
+                ) from exc
             time.sleep(retry_backoff_seconds * attempts)
 
 
@@ -521,12 +567,42 @@ def ingest_segments_to_hf(
     should_cancel: Callable[[], bool] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    ensure_project_dataset_structure(
-        api=api,
-        project_slug=project_slug,
-        dataset_repo=dataset_repo,
-        create_private_repo=False,
-    )
+    # Ensure repository structure with improved error handling
+    try:
+        ensure_project_dataset_structure(
+            api=api,
+            project_slug=project_slug,
+            dataset_repo=dataset_repo,
+            create_private_repo=False,
+            max_retries=3,
+            retry_delay_seconds=1.0,
+        )
+    except Exception as exc:
+        # Return error report instead of raising - allows UI to display meaningful message
+        return {
+            "mode": "execute",
+            "project_slug": project_slug,
+            "dataset_repo": dataset_repo,
+            "detections_csv": detections_csv,
+            "segments_root": segments_root,
+            "error": f"Repository initialization failed: {str(exc)[:200]}",
+            "csv_rows_total": 0,
+            "segments_found_total": 0,
+            "matched_rows": 0,
+            "unmatched_rows": 0,
+            "ambiguous_rows": 0,
+            "unique_audio_ids": 0,
+            "pending_audio_uploads": 0,
+            "uploaded_audio_now": 0,
+            "uploaded_audio_skipped_existing": 0,
+            "failed_uploads": 0,
+            "cancelled": False,
+            "resume_state_file": str(resume_state_file),
+            "index_rows_written": 0,
+            "shards_written": 0,
+            "sample_unmatched": [],
+            "sample_ambiguous": [],
+        }
 
     match_result = _match_birdnet_rows(
         project_slug=project_slug,
