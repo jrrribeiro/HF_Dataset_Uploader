@@ -356,6 +356,7 @@ def _match_birdnet_rows(project_slug: str, detections_csv: str, segments_root: s
                 "audio_id": source_stem,
                 "segment_filename": selected.absolute_path.name,
                 "segment_relpath": selected.relative_path,
+                "segment_abs_path": str(selected.absolute_path),
                 "scientific_name": row.get("scientific_name", ""),
                 "common_name": row.get("common_name", ""),
                 "confidence": confidence,
@@ -620,6 +621,16 @@ def ingest_segments_to_hf(
         repo_path = f"audio/segments/{row['segment_relpath']}"
         if repo_path in path_to_local:
             continue
+
+        # Prefer exact absolute path discovered during matching. This avoids
+        # reconstruction errors when archives include wrapper folders.
+        abs_path_value = str(row.get("segment_abs_path") or "").strip()
+        if abs_path_value:
+            abs_path = Path(abs_path_value)
+            if abs_path.exists():
+                path_to_local[repo_path] = abs_path
+                continue
+
         path_to_local[repo_path] = Path(segments_root) / row["segment_relpath"]
 
     state_path = Path(resume_state_file)
