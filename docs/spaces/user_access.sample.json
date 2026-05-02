@@ -1,0 +1,12 @@
+{
+  "admin_user": {
+    "kenya-2024": "admin",
+    "birds-local": "admin"
+  },
+  "validator_a": {
+    "kenya-2024": "validator"
+  },
+  "validator_b": {
+    "birds-local": "validator"
+  }
+}

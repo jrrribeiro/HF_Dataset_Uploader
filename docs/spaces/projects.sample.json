@@ -1,0 +1,14 @@
+[
+  {
+    "project_slug": "kenya-2024",
+    "name": "Kenya Survey 2024",
+    "dataset_repo_id": "org/kenya-2024-dataset",
+    "active": true
+  },
+  {
+    "project_slug": "birds-local",
+    "name": "Birds Local Validation",
+    "dataset_repo_id": "org/birds-local-dataset",
+    "active": true
+  }
+]

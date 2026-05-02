@@ -1,0 +1,79 @@
+name: Release BirdNET Uploader
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example 0.1.0)"
+        required: true
+        type: string
+      hf_repo_id:
+        description: "Optional Hugging Face repo id to publish artifacts to (for example jrrribeiro/birdnet-uploader-releases)"
+        required: false
+        type: string
+      hf_repo_type:
+        description: "Hugging Face repo type for uploads"
+        required: false
+        default: "dataset"
+        type: choice
+        options:
+          - dataset
+          - model
+      publish_to_hf:
+        description: "Upload release bundle to Hugging Face"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build release bundle
+        shell: pwsh
+        run: |
+          python build/release_uploader.py --version "${{ inputs.version }}"
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: birdnet-uploader-${{ inputs.version }}
+          path: |
+            build/release/*
+          if-no-files-found: error
+
+      - name: Publish to Hugging Face
+        if: ${{ inputs.publish_to_hf == true }}
+        shell: pwsh
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ inputs.hf_repo_id }}
+          HF_REPO_TYPE: ${{ inputs.hf_repo_type }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:HF_TOKEN)) { throw "HF_TOKEN secret is required when publish_to_hf is true" }
+          if ([string]::IsNullOrWhiteSpace($env:HF_REPO_ID)) { throw "hf_repo_id input is required when publish_to_hf is true" }
+          python -m pip install huggingface_hub
+          $bundle = Get-ChildItem build/release/*.zip | Select-Object -First 1
+          $checksum = Get-ChildItem build/release/*.sha256 | Select-Object -First 1
+          python build/publish_release_to_hf.py --repo-id "$env:HF_REPO_ID" --repo-type "$env:HF_REPO_TYPE" --bundle "$($bundle.FullName)" --checksum "$($checksum.FullName)" --version "$env:RELEASE_VERSION"
+
