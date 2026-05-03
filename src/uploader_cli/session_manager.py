@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+import threading
 
 from .config import get_session_root
 from .exceptions import SessionError
@@ -20,6 +21,7 @@ class SessionManager:
         self.session_id = session_id
         self.session_dir = get_session_root() / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     @classmethod
     def create_session(cls, metadata: dict[str, Any] | None = None) -> "SessionManager":
@@ -70,29 +72,31 @@ class SessionManager:
             raise SessionError(f"Invalid checkpoint JSON for session '{self.session_id}'") from exc
 
     def mark_file_done(self, *, remote_path: str, bytes_uploaded: int, status: str = "uploaded") -> dict[str, Any]:
-        checkpoint = self.load_checkpoint()
-        checkpoint.setdefault("uploaded_files", [])
-        checkpoint.setdefault("uploaded", 0)
-        checkpoint.setdefault("failed", 0)
-        checkpoint["uploaded"] = int(checkpoint["uploaded"]) + 1
-        checkpoint["status"] = status
-        checkpoint["last_completed_file"] = remote_path
-        checkpoint["last_update_at"] = datetime.now(UTC).isoformat()
-        checkpoint["bytes_uploaded"] = int(checkpoint.get("bytes_uploaded", 0)) + int(bytes_uploaded)
-        checkpoint["uploaded_files"].append(remote_path)
-        self.save_checkpoint(checkpoint)
-        return checkpoint
+        with self._lock:
+            checkpoint = self.load_checkpoint()
+            checkpoint.setdefault("uploaded_files", [])
+            checkpoint.setdefault("uploaded", 0)
+            checkpoint.setdefault("failed", 0)
+            checkpoint["uploaded"] = int(checkpoint["uploaded"]) + 1
+            checkpoint["status"] = status
+            checkpoint["last_completed_file"] = remote_path
+            checkpoint["last_update_at"] = datetime.now(UTC).isoformat()
+            checkpoint["bytes_uploaded"] = int(checkpoint.get("bytes_uploaded", 0)) + int(bytes_uploaded)
+            checkpoint["uploaded_files"].append(remote_path)
+            self.save_checkpoint(checkpoint)
+            return checkpoint
 
     def mark_file_failed(self, *, remote_path: str, error: str) -> dict[str, Any]:
-        checkpoint = self.load_checkpoint()
-        checkpoint.setdefault("failed_files", [])
-        checkpoint.setdefault("uploaded", 0)
-        checkpoint.setdefault("failed", 0)
-        checkpoint["failed"] = int(checkpoint["failed"]) + 1
-        checkpoint["status"] = "failed"
-        checkpoint["last_failed_file"] = remote_path
-        checkpoint["last_error"] = error
-        checkpoint["last_update_at"] = datetime.now(UTC).isoformat()
-        checkpoint["failed_files"].append({"remote_path": remote_path, "error": error})
-        self.save_checkpoint(checkpoint)
-        return checkpoint
+        with self._lock:
+            checkpoint = self.load_checkpoint()
+            checkpoint.setdefault("failed_files", [])
+            checkpoint.setdefault("uploaded", 0)
+            checkpoint.setdefault("failed", 0)
+            checkpoint["failed"] = int(checkpoint["failed"]) + 1
+            checkpoint["status"] = "failed"
+            checkpoint["last_failed_file"] = remote_path
+            checkpoint["last_error"] = error
+            checkpoint["last_update_at"] = datetime.now(UTC).isoformat()
+            checkpoint["failed_files"].append({"remote_path": remote_path, "error": error})
+            self.save_checkpoint(checkpoint)
+            return checkpoint

@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+SHELL ["powershell","-Command","$ErrorActionPreference = 'Stop';"]
+
+WORKDIR C:\app
+
+# Copy a one-folder PyInstaller bundle into the image at build time.
+# Expect the build artifact layout: dist\birdnet-uploader\* (exe + _internal)
+COPY dist\birdnet-uploader\ C:\app\
+
+ENV HF_TOKEN=""
+
+EXPOSE 0
+
+ENTRYPOINT ["C:\\app\\birdnet-uploader.exe"]

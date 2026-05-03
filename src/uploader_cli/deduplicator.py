@@ -5,6 +5,7 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+import threading
 
 from huggingface_hub import HfApi
 
@@ -23,6 +24,7 @@ class Deduplicator:
         self._remote_paths: set[str] | None = None
         self._decision_cache: dict[str, dict[str, Any]] = {}
         self.cache_path = self._build_cache_path()
+        self._lock = threading.Lock()
 
     def _build_cache_path(self) -> Path:
         cache_root = get_cache_root() / "dedup"
@@ -33,22 +35,22 @@ class Deduplicator:
     def load_cached_index(self) -> set[str]:
         if self._remote_paths is not None:
             return self._remote_paths
+        with self._lock:
+            if self.cache_path.exists():
+                raw = self.cache_path.read_text(encoding="utf-8")
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise ValidationError(f"Invalid dedup cache JSON at {self.cache_path}") from exc
 
-        if self.cache_path.exists():
-            raw = self.cache_path.read_text(encoding="utf-8")
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValidationError(f"Invalid dedup cache JSON at {self.cache_path}") from exc
+                remote_paths = payload.get("remote_paths", [])
+                if not isinstance(remote_paths, list):
+                    raise ValidationError(f"Invalid dedup cache format at {self.cache_path}")
+                self._remote_paths = {str(path) for path in remote_paths}
+                return self._remote_paths
 
-            remote_paths = payload.get("remote_paths", [])
-            if not isinstance(remote_paths, list):
-                raise ValidationError(f"Invalid dedup cache format at {self.cache_path}")
-            self._remote_paths = {str(path) for path in remote_paths}
+            self._remote_paths = self.refresh_remote_index()
             return self._remote_paths
-
-        self._remote_paths = self.refresh_remote_index()
-        return self._remote_paths
 
     def refresh_remote_index(self) -> set[str]:
         try:
@@ -57,8 +59,9 @@ class Deduplicator:
             raise ValidationError(f"Could not read remote file listing for {self.repo_id}: {exc}") from exc
 
         remote_paths = {str(path) for path in repo_files}
-        self._remote_paths = remote_paths
-        self._write_cache(remote_paths)
+        with self._lock:
+            self._remote_paths = remote_paths
+            self._write_cache(remote_paths)
         return remote_paths
 
     def check_remote(self, remote_path: str, *, file_path: str | Path | None = None) -> dict[str, Any]:
@@ -84,14 +87,15 @@ class Deduplicator:
         return payload
 
     def mark_uploaded(self, remote_path: str) -> None:
-        remote_paths = self.load_cached_index()
-        if remote_path not in remote_paths:
-            remote_paths.add(remote_path)
-            self._write_cache(remote_paths)
+        with self._lock:
+            remote_paths = self.load_cached_index()
+            if remote_path not in remote_paths:
+                remote_paths.add(remote_path)
+                self._write_cache(remote_paths)
 
-        keys_to_update = [key for key, value in self._decision_cache.items() if value.get("remote_path") == remote_path]
-        for key in keys_to_update:
-            self._decision_cache[key]["status"] = "skip"
+            keys_to_update = [key for key, value in self._decision_cache.items() if value.get("remote_path") == remote_path]
+            for key in keys_to_update:
+                self._decision_cache[key]["status"] = "skip"
 
     def _write_cache(self, remote_paths: set[str]) -> None:
         payload = {

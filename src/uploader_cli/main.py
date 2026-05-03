@@ -103,5 +103,146 @@ def resume_cmd(session_id: str) -> None:
     click.echo(json.dumps(payload, ensure_ascii=True, indent=2))
 
 
+@cli.command("upload")
+@click.option("--repo-id", required=True, help="Dataset repo id in owner/name format")
+@click.option("--segments", "segments_dir", required=True, type=click.Path(exists=True, file_okay=False), help="Local folder with audio segments")
+@click.option("--csv", "csv_file", required=False, type=click.Path(exists=True, dir_okay=False), help="Optional detections CSV to upload to the dataset")
+@click.option("--token", required=False, help="Hugging Face token (falls back to stored token)")
+@click.option("--session-id", required=False, help="Use or create a session id for resumable uploads")
+@click.option("--remote-base", default="audio", show_default=True, help="Remote base path inside the dataset")
+@click.option("--batch-size", default=None, type=int, help="Override batch size for uploads")
+@click.option("--workers", default=None, type=int, help="Number of parallel upload workers")
+@click.option("--dry-run", is_flag=True, default=False, help="Scan and report what would be uploaded, do not perform uploads")
+@handle_cli_errors
+def upload_cmd(
+    repo_id: str,
+    segments_dir: str,
+    csv_file: str | None,
+    token: str | None,
+    session_id: str | None,
+    remote_base: str,
+    batch_size: int | None,
+    workers: int | None,
+    dry_run: bool,
+) -> None:
+    """Upload local segments (and optional CSV) into the HF dataset.
+
+    The command uses stored token if `--token` is not provided. It creates/uses
+    a session checkpoint under the configurable session directory so uploads
+    can be resumed from the host when the container is mounted.
+    """
+    # Resolve token
+    if token:
+        hf_token = token
+    else:
+        hf_token = AuthService().require_token()
+
+    # Scan local segments
+    scanner = LocalScanner()
+    summary = scanner.scan_folder(segments_dir)
+    total_files = summary["total_files"]
+    total_size = summary["total_size"]
+
+    click.echo(f"Found {total_files} audio files ({total_size} bytes) under {segments_dir}")
+
+    if dry_run:
+        click.echo("Dry run: no files will be uploaded. Showing first 20 files:")
+        count = 0
+        for species, items in summary["by_species"].items():
+            for it in items:
+                if count >= 20:
+                    break
+                click.echo(f" - {it['relative_path']} ({it['size']} bytes)")
+                count += 1
+            if count >= 20:
+                break
+        if csv_file:
+            click.echo(f"Would also upload CSV: {csv_file} -> index/detections.csv")
+        return
+
+    # Prepare API and session
+    api = None
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=hf_token)
+    except Exception as exc:  # pragma: no cover - external
+        raise click.ClickException(build_error_message(exc)) from exc
+
+    # Validate dataset exists
+    repo_service = RepositoryService(hf_token)
+    validation = repo_service.validate_repo(repo_id)
+    if not validation.get("is_valid"):
+        click.echo(f"Warning: dataset {repo_id} may be missing structure: {validation.get('missing_prefixes')}")
+
+    # Create deduplicator, session and uploader
+    from src.uploader_cli.deduplicator import Deduplicator
+    from src.uploader_cli.batch_uploader import BatchUploader
+
+    dedup = Deduplicator(api=api, repo_id=repo_id)
+    session = SessionManager(session_id=session_id) if session_id else SessionManager()
+    uploader = BatchUploader(api=api, repo_id=repo_id, deduplicator=dedup, session=session, max_retries=None, initial_backoff=None, max_workers=workers)
+
+    # Flatten file infos
+    file_infos: list[dict] = []
+    for species, items in summary["by_species"].items():
+        for it in items:
+            # keep the relative path as scanned (preserves species directories)
+            file_infos.append({"full_path": it["full_path"], "relative_path": it["relative_path"], "size": it.get("size", 0)})
+
+    # Upload CSV first if present
+    if csv_file:
+        click.echo(f"Uploading CSV to index/detections.csv...")
+        try:
+            api.upload_file(path_or_file=str(csv_file), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
+            click.echo("CSV uploaded")
+        except Exception as exc:
+            raise click.ClickException(f"CSV upload failed: {exc}") from exc
+
+    # Build and upload manifest.json based on scan and optional CSV
+    try:
+        from src.uploader_cli.manifest import build_manifest_from_scan, manifest_to_bytes
+
+        csv_rows = None
+        if csv_file:
+            import csv
+
+            with open(csv_file, newline="", encoding="utf-8") as fh:
+                reader = csv.DictReader(fh)
+                csv_rows = list(reader)
+
+        manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
+        api.upload_file(path_or_fileobj=manifest_to_bytes(manifest), path_in_repo="index/manifest.json", repo_id=repo_id, repo_type="dataset")
+        click.echo("Manifest uploaded: index/manifest.json")
+    except Exception as exc:  # pragma: no cover - external API
+        raise click.ClickException(f"Manifest upload failed: {exc}") from exc
+
+    # Generate and upload shards based on CSV rows (if any)
+    try:
+        from src.uploader_cli.manifest import write_shards_from_csv_rows
+
+        if csv_file and csv_rows:
+            click.echo("Generating index shards from CSV detections...")
+            shards = write_shards_from_csv_rows(csv_rows, shard_size=int(__import__("src.uploader_cli.config", fromlist=["INDEX_SHARD_SIZE"]).INDEX_SHARD_SIZE))
+            for shard_path in shards:
+                shard_name = shard_path.name
+                click.echo(f"Uploading shard: index/shards/{shard_name}")
+                try:
+                    api.upload_file(path_or_file=str(shard_path), path_in_repo=f"index/shards/{shard_name}", repo_id=repo_id, repo_type="dataset")
+                except Exception as exc:
+                    click.echo(f"Warning: failed to upload shard {shard_name}: {exc}")
+            click.echo(f"Uploaded {len(shards)} shards")
+    except Exception as exc:  # pragma: no cover - external API
+        raise click.ClickException(f"Shard generation/upload failed: {exc}") from exc
+
+    click.echo("Starting upload of audio files...")
+
+    def on_progress(state: dict) -> None:
+        click.echo(f"Progress: uploaded={state.get('uploaded')} skipped={state.get('skipped')} failed={state.get('failed')}", err=False)
+
+    result = uploader.upload_files(file_infos, remote_base=remote_base, batch_size=batch_size, on_progress=on_progress)
+    click.echo(json.dumps(result, ensure_ascii=True, indent=2))
+
+
 if __name__ == "__main__":
     cli()

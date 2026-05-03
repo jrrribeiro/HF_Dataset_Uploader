@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import concurrent.futures
+from typing import List, Tuple
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -23,6 +25,7 @@ class BatchUploader:
         *,
         max_retries: int | None = None,
         initial_backoff: float | None = None,
+        max_workers: int | None = None,
     ) -> None:
         self._api = api
         self.repo_id = repo_id
@@ -30,6 +33,7 @@ class BatchUploader:
         self.session = session or SessionManager.create_session()
         self.max_retries = max_retries or RETRY_MAX_ATTEMPTS
         self.initial_backoff = initial_backoff or RETRY_INITIAL_BACKOFF_SECONDS
+        self.max_workers = max_workers
 
     def _upload_file_with_retry(self, local_path: str | Path, remote_path: str) -> None:
         attempts = 0
@@ -65,6 +69,8 @@ class BatchUploader:
         skipped = 0
         failed = 0
 
+        # First pass: decide which files to skip and which to upload
+        to_upload: List[Tuple[str, str, int]] = []
         for info in file_infos:
             full_path = str(info["full_path"])
             relative = info["relative_path"].lstrip("/")
@@ -79,24 +85,54 @@ class BatchUploader:
                     on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
                 continue
 
+            to_upload.append((full_path, remote_path, int(info.get("size", 0))))
+
+        # If no parallelism requested, perform sequential upload to preserve behavior
+        if not self.max_workers or self.max_workers <= 1:
+            for full_path, remote_path, size in to_upload:
+                try:
+                    self._upload_file_with_retry(full_path, remote_path)
+                    try:
+                        self.deduplicator.mark_uploaded(remote_path)
+                    except Exception:
+                        pass
+                    uploaded += 1
+                    self.session.mark_file_done(remote_path=remote_path, bytes_uploaded=size)
+                    if on_progress:
+                        on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
+                except Exception as exc:
+                    failed += 1
+                    self.session.mark_file_failed(remote_path=remote_path, error=str(exc))
+                    if on_progress:
+                        on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
+            return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
+
+        # Parallel upload path
+        def _worker(task: Tuple[str, str, int]) -> Tuple[str, str]:
+            full_path, remote_path, size = task
             try:
                 self._upload_file_with_retry(full_path, remote_path)
-                # mark remote as present in local dedup cache
                 try:
                     self.deduplicator.mark_uploaded(remote_path)
                 except Exception:
-                    # non-fatal cache update failure should not break overall flow
                     pass
-
-                uploaded += 1
-                bytes_uploaded = int(info.get("size", 0))
-                self.session.mark_file_done(remote_path=remote_path, bytes_uploaded=bytes_uploaded)
-                if on_progress:
-                    on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
+                self.session.mark_file_done(remote_path=remote_path, bytes_uploaded=size)
+                return ("ok", remote_path)
             except Exception as exc:
-                failed += 1
                 self.session.mark_file_failed(remote_path=remote_path, error=str(exc))
+                return ("fail", remote_path)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            futures = {ex.submit(_worker, t): t for t in to_upload}
+            for fut in concurrent.futures.as_completed(futures):
+                res = fut.result()
+                if res[0] == "ok":
+                    uploaded += 1
+                else:
+                    failed += 1
                 if on_progress:
                     on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
+
+        return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
 
         return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
