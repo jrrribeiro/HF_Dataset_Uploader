@@ -14,6 +14,18 @@ def test_get_session_root_uses_env_override(tmp_path: Path, monkeypatch) -> None
     assert resolved.is_dir()
 
 
+def test_get_session_root_prefers_data_dir_when_session_dir_missing(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "container-data"
+    monkeypatch.delenv("BIRDNET_UPLOADER_SESSION_DIR", raising=False)
+    monkeypatch.setenv("BIRDNET_UPLOADER_DATA_DIR", str(data_root))
+
+    resolved = get_session_root()
+
+    assert resolved == data_root / "sessions"
+    assert resolved.exists()
+    assert resolved.is_dir()
+
+
 def test_get_runtime_config_contains_expected_keys() -> None:
     config = get_runtime_config()
 

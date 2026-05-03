@@ -8,6 +8,9 @@ WORKDIR C:\app
 # Expect the build artifact layout: dist\birdnet-uploader\* (exe + _internal)
 COPY dist\birdnet-uploader\ C:\app\
 
+VOLUME ["C:\\data"]
+
+ENV BIRDNET_UPLOADER_DATA_DIR="C:\\data"
 ENV HF_TOKEN=""
 
 EXPOSE 0

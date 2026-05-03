@@ -1,7 +1,8 @@
 Param(
     [string]$RepoId = "owner/dataset",
     [string]$Segments = "C:\data\segments",
-    [string]$Token = $env:HF_TOKEN
+    [string]$Token = $env:HF_TOKEN,
+    [string]$SessionDir = $env:BIRDNET_UPLOADER_SESSION_DIR
 )
 
 if (-not $Token) {
@@ -10,6 +11,9 @@ if (-not $Token) {
 }
 
 Write-Host "Running smoke test upload against $RepoId using segments at $Segments"
+if ($SessionDir) {
+    Write-Host "Session checkpoints will persist under $SessionDir"
+}
 
 # Dry run first
 & .\birdnet-uploader.exe upload --repo-id $RepoId --segments $Segments --token $Token --dry-run
