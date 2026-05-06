@@ -7,11 +7,11 @@ from typing import Any, Callable
 
 import click
 
-from src.uploader_cli.auth_service import AuthService
-from src.uploader_cli.error_handler import build_error_message
-from src.uploader_cli.repo_service import RepositoryService
-from src.uploader_cli.scanner import LocalScanner
-from src.uploader_cli.session_manager import SessionManager
+from .auth_service import AuthService
+from .error_handler import build_error_message
+from .repo_service import RepositoryService
+from .scanner import LocalScanner
+from .session_manager import SessionManager
 
 
 def handle_cli_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -124,7 +124,7 @@ def upload_cmd(
     batch_size: int | None,
     workers: int | None,
     dry_run: bool,
-) -> None:
+):
     """Upload local segments (and optional CSV) into the HF dataset.
 
     Token resolution (in order of priority):
@@ -134,13 +134,11 @@ def upload_cmd(
 
     The command creates/uses a session checkpoint for resumable uploads.
     """
-    # Resolve token from CLI, env var, or secure storage
     if token:
         hf_token = token
     else:
         hf_token = AuthService().require_token()
 
-    # Scan local segments
     scanner = LocalScanner()
     summary = scanner.scan_folder(segments_dir)
     total_files = summary["total_files"]
@@ -163,7 +161,6 @@ def upload_cmd(
             click.echo(f"Would also upload CSV: {csv_file} -> index/detections.csv")
         return
 
-    # Prepare API and session
     api = None
     try:
         from huggingface_hub import HfApi
@@ -172,28 +169,23 @@ def upload_cmd(
     except Exception as exc:  # pragma: no cover - external
         raise click.ClickException(build_error_message(exc)) from exc
 
-    # Validate dataset exists
     repo_service = RepositoryService(hf_token)
     validation = repo_service.validate_repo(repo_id)
     if not validation.get("is_valid"):
         click.echo(f"Warning: dataset {repo_id} may be missing structure: {validation.get('missing_prefixes')}")
 
-    # Create deduplicator, session and uploader
-    from src.uploader_cli.deduplicator import Deduplicator
-    from src.uploader_cli.batch_uploader import BatchUploader
+    from .deduplicator import Deduplicator
+    from .batch_uploader import BatchUploader
 
     dedup = Deduplicator(api=api, repo_id=repo_id)
     session = SessionManager(session_id=session_id) if session_id else SessionManager()
     uploader = BatchUploader(api=api, repo_id=repo_id, deduplicator=dedup, session=session, max_retries=None, initial_backoff=None, max_workers=workers)
 
-    # Flatten file infos
     file_infos: list[dict] = []
     for species, items in summary["by_species"].items():
         for it in items:
-            # keep the relative path as scanned (preserves species directories)
             file_infos.append({"full_path": it["full_path"], "relative_path": it["relative_path"], "size": it.get("size", 0)})
 
-    # Upload CSV first if present
     if csv_file:
         click.echo(f"Uploading CSV to index/detections.csv...")
         try:
@@ -202,9 +194,8 @@ def upload_cmd(
         except Exception as exc:
             raise click.ClickException(f"CSV upload failed: {exc}") from exc
 
-    # Build and upload manifest.json based on scan and optional CSV
     try:
-        from src.uploader_cli.manifest import build_manifest_from_scan, manifest_to_bytes
+        from .manifest import build_manifest_from_scan, manifest_to_bytes
 
         csv_rows = None
         if csv_file:
@@ -220,13 +211,12 @@ def upload_cmd(
     except Exception as exc:  # pragma: no cover - external API
         raise click.ClickException(f"Manifest upload failed: {exc}") from exc
 
-    # Generate and upload shards based on CSV rows (if any)
     try:
-        from src.uploader_cli.manifest import write_shards_from_csv_rows
+        from .manifest import write_shards_from_csv_rows
 
         if csv_file and csv_rows:
             click.echo("Generating index shards from CSV detections...")
-            shards = write_shards_from_csv_rows(csv_rows, shard_size=int(__import__("src.uploader_cli.config", fromlist=["INDEX_SHARD_SIZE"]).INDEX_SHARD_SIZE))
+            shards = write_shards_from_csv_rows(csv_rows, shard_size=int(__import__("src.uploader.config", fromlist=["INDEX_SHARD_SIZE"]).INDEX_SHARD_SIZE))
             for shard_path in shards:
                 shard_name = shard_path.name
                 click.echo(f"Uploading shard: index/shards/{shard_name}")

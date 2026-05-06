@@ -1,5 +1,5 @@
 ---
-title: BirdNET-Validator-App
+title: BirdNET-Uploader-App
 emoji: "🐦"
 colorFrom: green
 colorTo: blue
@@ -10,14 +10,14 @@ app_file: app.py
 pinned: false
 ---
 
-# BirdNET-Validator-App
+# BirdNET-Uploader-App
 
-BirdNET-Validator-App is a multi-purpose BirdNET workflow repository with two complementary entry points:
+BirdNET-Uploader-App is a focused tool for reliably uploading large audio collections and optional detection CSVs to Hugging Face datasets. It provides:
 
-1. A Gradio-based web application for human validation of BirdNET detections in multi-project workflows.
-2. A local command-line uploader for resumable Hugging Face dataset uploads with checkpoints, deduplication, and a Windows-friendly interactive flow.
+- A unified Gradio web interface for small-to-medium uploads (single flow; CSV optional and auto-detected)
+- A Windows standalone container (downloadable) for large uploads without installing Python
 
-The validator app focuses on review, authorization, and auditability. The uploader CLI focuses on reliable dataset ingestion for large audio collections.
+This repository contains a resumable uploader with deduplication, manifest/shard generation, and a simple web UI for convenience.
 
 ## Contents
 

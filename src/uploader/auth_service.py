@@ -12,10 +12,10 @@ from .exceptions import AuthenticationError
 
 class AuthService:
     """Authenticate and securely store Hugging Face tokens.
-    
+
     Token resolution order (highest to lowest priority):
     1. HF_TOKEN environment variable (useful for container/CI)
-    2. keyring (OS-specific secure storage: Credential Manager on Windows, Keychain on macOS, Secret Service on Linux)
+    2. keyring (OS-specific secure storage)
     3. Manual --token CLI option
     """
 
@@ -46,15 +46,13 @@ class AuthService:
 
     def get_token(self) -> str | None:
         """Retrieve token from environment or secure storage.
-        
+
         Priority: HF_TOKEN env var > keyring storage.
         """
-        # First check environment variable (useful for Docker/CI)
         env_token = os.getenv(TOKEN_ENV_VAR)
         if env_token:
             return env_token.strip()
-        
-        # Fall back to keyring (OS-specific secure storage)
+
         try:
             return keyring.get_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT)
         except Exception as exc:  # pragma: no cover - backend-specific behavior

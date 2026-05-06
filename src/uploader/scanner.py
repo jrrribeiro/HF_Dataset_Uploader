@@ -7,7 +7,6 @@ from typing import Any
 from .config import AUDIO_EXTENSIONS
 from .hash_utils import compute_file_hash
 
-
 class LocalScanner:
     """Scan local directories and group files by inferred species."""
 

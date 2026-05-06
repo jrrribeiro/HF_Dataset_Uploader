@@ -28,7 +28,6 @@ def _resolve_path_from_env(env_name: str, default: Path) -> Path:
 
 
 def get_session_root() -> Path:
-    """Resolve and create the session storage root directory."""
     data_root = os.getenv("BIRDNET_UPLOADER_DATA_DIR")
     if data_root:
         return _resolve_path_from_env("BIRDNET_UPLOADER_SESSION_DIR", Path(data_root).expanduser() / "sessions")

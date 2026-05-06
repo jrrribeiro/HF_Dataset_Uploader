@@ -32,10 +32,8 @@ def build_manifest_from_scan(repo_id: str, scan_summary: dict[str, Any], *, csv_
     shards: list[str] = []
 
     if csv_rows is not None:
-        # csv_rows expected to be an iterable of detection dicts with at least 'audio_file' key
         rows = list(csv_rows)
         total_detections = len(rows)
-        # derive unique audio files referenced by CSV
         unique_files = {str(r.get("audio_file") or r.get("file") or "") for r in rows}
         unique_files = {p for p in unique_files if p}
         if unique_files:
@@ -61,13 +59,6 @@ def manifest_to_bytes(manifest: dict[str, Any]) -> bytes:
 
 
 def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: int = INDEX_SHARD_SIZE) -> List[Path]:
-    """Write shards from CSV rows.
-
-    Prefer Parquet (pandas/pyarrow). If pandas (and its parquet engine) is
-    unavailable, fall back to newline-delimited JSON (.jsonl).
-
-    Returns list of Path objects for shard files created.
-    """
     rows_list = list(rows)
     if not rows_list:
         return []
@@ -83,7 +74,6 @@ def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: in
                 df = pd.DataFrame.from_records(chunk)
                 shard_name = f"shard-{shard_index:06d}.parquet"
                 shard_path = tmpdir / shard_name
-                # pandas will choose pyarrow or fastparquet if available
                 df.to_parquet(shard_path, index=False)
             else:
                 shard_name = f"shard-{shard_index:06d}.jsonl"
@@ -96,7 +86,6 @@ def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: in
 
         return out_paths
     except Exception:
-        # If anything fails, attempt to cleanup created files then re-raise
         try:
             for p in tmpdir.iterdir():
                 p.unlink()

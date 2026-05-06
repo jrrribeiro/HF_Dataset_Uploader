@@ -40,8 +40,6 @@ class BatchUploader:
         last_exc: Exception | None = None
         while attempts <= self.max_retries:
             try:
-                # The HfApi.upload_file signature varies across versions; callers/tests
-                # should accept the positional usage shown here and monkeypatch in tests.
                 self._api.upload_file(path_or_file=local_path, path_in_repo=remote_path, repo_id=self.repo_id)
                 return
             except Exception as exc:  # pragma: no cover - network behavior
@@ -60,16 +58,11 @@ class BatchUploader:
         batch_size: int | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Upload an iterable of file info dictionaries.
-
-        Each file_info must include `full_path` and `relative_path`. `size` is optional.
-        """
         batch_size = batch_size or MAX_BATCH_SIZE
         uploaded = 0
         skipped = 0
         failed = 0
 
-        # First pass: decide which files to skip and which to upload
         to_upload: List[Tuple[str, str, int]] = []
         for info in file_infos:
             full_path = str(info["full_path"])
@@ -87,7 +80,6 @@ class BatchUploader:
 
             to_upload.append((full_path, remote_path, int(info.get("size", 0))))
 
-        # If no parallelism requested, perform sequential upload to preserve behavior
         if not self.max_workers or self.max_workers <= 1:
             for full_path, remote_path, size in to_upload:
                 try:
@@ -107,7 +99,6 @@ class BatchUploader:
                         on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
             return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
 
-        # Parallel upload path
         def _worker(task: Tuple[str, str, int]) -> Tuple[str, str]:
             full_path, remote_path, size = task
             try:
@@ -132,7 +123,5 @@ class BatchUploader:
                     failed += 1
                 if on_progress:
                     on_progress({"uploaded": uploaded, "skipped": skipped, "failed": failed})
-
-        return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
 
         return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
