@@ -17,6 +17,7 @@ RETRY_MAX_BACKOFF_SECONDS = 30.0
 
 KEYRING_SERVICE = "birdnet-uploader"
 KEYRING_ACCOUNT = "hf_token"
+TOKEN_ENV_VAR = "HF_TOKEN"
 
 
 def _resolve_path_from_env(env_name: str, default: Path) -> Path:

@@ -107,7 +107,7 @@ def resume_cmd(session_id: str) -> None:
 @click.option("--repo-id", required=True, help="Dataset repo id in owner/name format")
 @click.option("--segments", "segments_dir", required=True, type=click.Path(exists=True, file_okay=False), help="Local folder with audio segments")
 @click.option("--csv", "csv_file", required=False, type=click.Path(exists=True, dir_okay=False), help="Optional detections CSV to upload to the dataset")
-@click.option("--token", required=False, help="Hugging Face token (falls back to stored token)")
+@click.option("--token", required=False, help="Hugging Face token (falls back to HF_TOKEN env var or keyring storage)")
 @click.option("--session-id", required=False, help="Use or create a session id for resumable uploads")
 @click.option("--remote-base", default="audio", show_default=True, help="Remote base path inside the dataset")
 @click.option("--batch-size", default=None, type=int, help="Override batch size for uploads")
@@ -127,11 +127,14 @@ def upload_cmd(
 ) -> None:
     """Upload local segments (and optional CSV) into the HF dataset.
 
-    The command uses stored token if `--token` is not provided. It creates/uses
-    a session checkpoint under the configurable session directory so uploads
-    can be resumed from the host when the container is mounted.
+    Token resolution (in order of priority):
+    1. --token option (if provided)
+    2. HF_TOKEN environment variable (useful for Docker/CI)
+    3. Keyring secure storage (use 'birdnet-uploader login' to store)
+
+    The command creates/uses a session checkpoint for resumable uploads.
     """
-    # Resolve token
+    # Resolve token from CLI, env var, or secure storage
     if token:
         hf_token = token
     else:

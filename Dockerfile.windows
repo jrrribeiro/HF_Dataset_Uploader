@@ -10,7 +10,11 @@ COPY dist\birdnet-uploader\ C:\app\
 
 VOLUME ["C:\\data"]
 
+# Session/cache storage directory (respects BIRDNET_UPLOADER_DATA_DIR and BIRDNET_UPLOADER_SESSION_DIR env vars)
 ENV BIRDNET_UPLOADER_DATA_DIR="C:\\data"
+
+# Token handling: pass HF_TOKEN at runtime via docker run -e HF_TOKEN="hf_..." or docker secrets
+# Do NOT hardcode tokens in the image
 ENV HF_TOKEN=""
 
 EXPOSE 0
