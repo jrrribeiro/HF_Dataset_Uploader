@@ -51,10 +51,11 @@ This repository is a focused tool for reliably uploading large audio collections
 
 ### Windows Portable (Unlimited Size)
 
-1. [Download the latest Windows release](https://github.com/jrrribeiro/BirdNET-Uploader-App/releases/latest)
-2. Extract `birdnet-uploader-windows.zip`
+1. [Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip) (~100 MB)
+2. Extract the archive
 3. Double-click `birdnet-uploader.exe` to launch the web UI
    - Or use CLI commands: `birdnet-uploader login`, `birdnet-uploader upload --help`
+   - See [WINDOWS_PORTABLE_SETUP.md](./WINDOWS_PORTABLE_SETUP.md) for detailed instructions
 
 ### Local CLI (Python 3.11+)
 

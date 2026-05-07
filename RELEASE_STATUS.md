@@ -101,12 +101,12 @@ $env:HF_TOKEN = "hf_xxxxxxxxxxxx"  # Get from https://huggingface.co/settings/to
 
 After successful upload, you'll get a URL like:
 ```
-https://huggingface.co/datasets/your-org/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip
+https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip
 ```
 
 Update in `src/uploader/web_ui.py` (line ~280):
 ```python
-**[🔗 Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/your-org/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip)**
+**[🔗 Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip)**
 ```
 
 ### Step 4: Deploy Updates

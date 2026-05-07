@@ -67,7 +67,7 @@ with gr.Group("Download"):
     
     Para uploads maiores (>1 GB) sem limite de tamanho, baixe o executável portátil:
     
-    **[🔗 Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/your-org/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip)**
+    **[🔗 Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip)**
     
     **Checksum SHA256:**
     ```
