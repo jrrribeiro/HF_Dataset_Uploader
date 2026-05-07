@@ -177,9 +177,38 @@ def upload_cmd(
         raise click.ClickException(build_error_message(exc)) from exc
 
     repo_service = RepositoryService(hf_token)
-    validation = repo_service.validate_repo(repo_id)
-    if not validation.get("is_valid"):
-        click.echo(f"Warning: dataset {repo_id} may be missing structure: {validation.get('missing_prefixes')}")
+    try:
+        validation = repo_service.validate_repo(repo_id)
+        if not validation.get("is_valid"):
+            click.echo(f"⚠️  Dataset structure incomplete. Attempting to initialize...")
+            try:
+                repo_service.create_dataset(repo_id, private=True)
+                click.echo(f"✅ Dataset structure created successfully!")
+            except Exception as exc:
+                raise click.ClickException(
+                    f"Could not initialize dataset structure:\n{exc}\n\n"
+                    f"Possible causes:\n"
+                    f"• Invalid repo_id format (should be 'username/dataset-name')\n"
+                    f"• No write permission\n"
+                    f"• HuggingFace API error"
+                ) from exc
+    except Exception as exc:
+        error_msg = str(exc)
+        # Dataset doesn't exist - try to create it
+        if "404" in error_msg or "Repository Not Found" in error_msg:
+            click.echo(f"⚠️  Dataset '{repo_id}' not found. Creating...")
+            try:
+                repo_service.create_dataset(repo_id, private=True)
+                click.echo(f"✅ Dataset created and initialized successfully!")
+            except Exception as create_exc:
+                raise click.ClickException(
+                    f"Dataset not found and could not be created:\n{create_exc}\n\n"
+                    f"Please:\n"
+                    f"1. Verify repo_id format: 'your-username/dataset-name'\n"
+                    f"2. Check HuggingFace token has dataset creation permissions"
+                ) from create_exc
+        else:
+            raise click.ClickException(f"Repository validation failed: {error_msg}") from exc
 
     from .deduplicator import Deduplicator
     from .batch_uploader import BatchUploader
@@ -196,7 +225,7 @@ def upload_cmd(
     if csv_file:
         click.echo(f"Uploading CSV to index/detections.csv...")
         try:
-            api.upload_file(path_or_file=str(csv_file), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
+            api.upload_file(path_or_fileobj=str(csv_file), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
             click.echo("CSV uploaded")
         except Exception as exc:
             raise click.ClickException(f"CSV upload failed: {exc}") from exc
@@ -228,7 +257,7 @@ def upload_cmd(
                 shard_name = shard_path.name
                 click.echo(f"Uploading shard: index/shards/{shard_name}")
                 try:
-                    api.upload_file(path_or_file=str(shard_path), path_in_repo=f"index/shards/{shard_name}", repo_id=repo_id, repo_type="dataset")
+                    api.upload_file(path_or_fileobj=str(shard_path), path_in_repo=f"index/shards/{shard_name}", repo_id=repo_id, repo_type="dataset")
                 except Exception as exc:
                     click.echo(f"Warning: failed to upload shard {shard_name}: {exc}")
             click.echo(f"Uploaded {len(shards)} shards")
