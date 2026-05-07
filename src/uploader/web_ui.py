@@ -316,24 +316,24 @@ def create_uploader_app():
 
 Para uploads maiores (>1 GB) ou melhor performance, baixe o executável portátil:
 
-**[🔗 Download birdnet-uploader-1.0.3-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.3/birdnet-uploader-1.0.3-windows.zip)**
+**[🔗 Download birdnet-uploader-1.0.4-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip)**
 
 - **Tamanho**: ~109 MB (sem Python necessário)
 - **Performance**: Upload ilimitado via CLI
-- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.3/birdnet-uploader-1.0.3-windows.zip.sha256)
+- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip.sha256)
 - **Instruções**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
 - **Troubleshooting**: [Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/TROUBLESHOOTING.md)
 
 ### 📋 Checksum SHA256
 ```
-7cdf2776fd53e1f67cc1e42ce5368366c951828a4fd299c31a8783d3c4afdb09
+71d126edf726298ed25d4b72b5364e85fa6b1e76157c4f1ee0ab76b4a653f359
 ```
 
-### ⚡ Novidades na v1.0.3
-- ✅ **CRÍTICO**: Auto-criação de datasets caso não existam no perfil HF
-- ✅ **Melhorado**: Web UI e CLI criam estrutura automaticamente
-- ✅ Melhorado: Mensagens de erro mais claras e acionáveis
-- ✅ Corrigido: Parâmetros da API HF para upload de arquivos (web_ui.py e main.py)
+### ⚡ Novidades na v1.0.4
+- ✅ **CRÍTICO**: Gradio agora incluído no exe (antes faltava!)
+- ✅ **Melhorado**: Timeout aumentado para uploads longos
+- ✅ **Corrigido**: Parâmetro API de batch_uploader (path_or_file → path_or_fileobj)
+- ✅ Melhorado: Tratamento de erros durante uploads""")
 - ✅ Adicionado: test_imports.py para diagnóstico
 """)
 

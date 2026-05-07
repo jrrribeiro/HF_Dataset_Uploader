@@ -20,6 +20,8 @@ a = Analysis(
         "pydantic",
         "pandas",
         "pyarrow",
+        "fastapi",
+        "starlette",
         "src.uploader",
         "src.uploader.auth_service",
         "src.uploader.batch_uploader",

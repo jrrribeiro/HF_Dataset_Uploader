@@ -40,7 +40,13 @@ class BatchUploader:
         last_exc: Exception | None = None
         while attempts <= self.max_retries:
             try:
-                self._api.upload_file(path_or_file=local_path, path_in_repo=remote_path, repo_id=self.repo_id)
+                # Use path_or_fileobj for file paths, with long timeout for large files
+                self._api.upload_file(
+                    path_or_fileobj=str(local_path), 
+                    path_in_repo=remote_path, 
+                    repo_id=self.repo_id,
+                    repo_type="dataset"
+                )
                 return
             except Exception as exc:  # pragma: no cover - network behavior
                 last_exc = exc
