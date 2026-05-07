@@ -149,14 +149,34 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
         api = HfApi(token=token)
         repo_service = RepositoryService(token)
         progress(0.2, desc="Validating repository...")
-        validation = repo_service.validate_repo(repo_id)
-        if not validation.get("is_valid"):
-            # attempt to create required structure
-            try:
-                repo_service.create_dataset(repo_id, private=True)
-            except Exception:
-                # fall back to warning
-                pass
+        
+        try:
+            validation = repo_service.validate_repo(repo_id)
+            if not validation.get("is_valid"):
+                # attempt to create required structure
+                try:
+                    repo_service.create_dataset(repo_id, private=True)
+                except Exception as e:
+                    return (
+                        f"⚠️ Could not validate/create dataset '{repo_id}'. "
+                        f"Make sure the dataset exists at https://huggingface.co/datasets/{repo_id} "
+                        f"or create it first. Error: {str(e)[:100]}", 
+                        None
+                    )
+        except Exception as e:
+            error_msg = str(e)
+            if "404" in error_msg or "Repository Not Found" in error_msg:
+                return (
+                    f"❌ Dataset not found: {repo_id}\n\n"
+                    f"Please create it first:\n"
+                    f"1. Go to https://huggingface.co/new-dataset\n"
+                    f"2. Set Name: {repo_id.split('/')[-1]}\n"
+                    f"3. Create the dataset\n"
+                    f"4. Try uploading again",
+                    None
+                )
+            else:
+                return f"Repository validation failed: {error_msg}", None
 
         # Build scan summary from extracted/uploaded files
         progress(0.3, desc="Scanning files...")
@@ -283,23 +303,24 @@ def create_uploader_app():
 
 Para uploads maiores (>1 GB) ou melhor performance, baixe o executável portátil:
 
-**[🔗 Download birdnet-uploader-1.0.1-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.1/birdnet-uploader-1.0.1-windows.zip)**
+**[🔗 Download birdnet-uploader-1.0.2-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.2/birdnet-uploader-1.0.2-windows.zip)**
 
 - **Tamanho**: ~109 MB (sem Python necessário)
 - **Performance**: Upload ilimitado via CLI
-- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.1/birdnet-uploader-1.0.1-windows.zip.sha256)
+- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.2/birdnet-uploader-1.0.2-windows.zip.sha256)
 - **Instruções**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
+- **Troubleshooting**: [Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/TROUBLESHOOTING.md)
 
 ### 📋 Checksum SHA256
 ```
-09e95e44403cd94dfb37c2d5a4f37c4972bdaf009b64d7ac2387752c0db0f93b
+0a9e77a76c57f1200da3446dcbc4bc400b19e3f0a247d7826ee05c4032144753
 ```
 
-### ⚡ Novidades na v1.0.1
-- ✅ Corrigido: API do HF upload com parâmetro correto
-- ✅ Melhorado: Tratamento de erros com logging detalhado
-- ✅ Adicionado: Troubleshooting guide completo
-- ✅ Adicionado: Debug scripts para diagnóstico
+### ⚡ Novidades na v1.0.2
+- ✅ **CRÍTICO**: Corrigido: app.py agora executa corretamente no exe (removido if __name__)
+- ✅ Melhorado: Erro 404 do dataset agora mostra instruções claras
+- ✅ Melhorado: Mensagens de erro mais descritivas
+- ✅ Adicionado: test_imports.py para diagnóstico
 """)
 
         def _start(token_val, repo_val, files_val, csv_val, remote_base_val, workers_val, progress=gr.Progress()):
