@@ -171,7 +171,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
         try:
             if csv_path:
                 progress(0.45, desc="Uploading detections CSV...")
-                api.upload_file(path_or_file=str(csv_path), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
+                api.upload_file(path_or_fileobj=str(csv_path), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
         except Exception as exc:
             return f"CSV upload failed: {exc}", None
 
@@ -200,7 +200,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
                 for i, shard_path in enumerate(shards):
                     try:
                         progress(0.6 + (0.1 * i / len(shards)), desc=f"Uploading shard {i+1}/{len(shards)}...")
-                        api.upload_file(path_or_file=str(shard_path), path_in_repo=f"index/shards/{shard_path.name}", repo_id=repo_id, repo_type="dataset")
+                        api.upload_file(path_or_fileobj=str(shard_path), path_in_repo=f"index/shards/{shard_path.name}", repo_id=repo_id, repo_type="dataset")
                     except Exception:
                         # continue with other shards
                         continue
@@ -283,17 +283,23 @@ def create_uploader_app():
 
 Para uploads maiores (>1 GB) ou melhor performance, baixe o executável portátil:
 
-**[🔗 Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip)**
+**[🔗 Download birdnet-uploader-1.0.1-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.1/birdnet-uploader-1.0.1-windows.zip)**
 
-- **Tamanho**: ~100 MB (sem Python necessário)
+- **Tamanho**: ~109 MB (sem Python necessário)
 - **Performance**: Upload ilimitado via CLI
-- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip.sha256)
+- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.1/birdnet-uploader-1.0.1-windows.zip.sha256)
 - **Instruções**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
 
 ### 📋 Checksum SHA256
 ```
-fb022851524b6c7cf05c2f403118ae833f77656643f01fffef768a59865db631
+09e95e44403cd94dfb37c2d5a4f37c4972bdaf009b64d7ac2387752c0db0f93b
 ```
+
+### ⚡ Novidades na v1.0.1
+- ✅ Corrigido: API do HF upload com parâmetro correto
+- ✅ Melhorado: Tratamento de erros com logging detalhado
+- ✅ Adicionado: Troubleshooting guide completo
+- ✅ Adicionado: Debug scripts para diagnóstico
 """)
 
         def _start(token_val, repo_val, files_val, csv_val, remote_base_val, workers_val, progress=gr.Progress()):
