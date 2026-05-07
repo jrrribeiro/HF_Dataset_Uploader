@@ -113,6 +113,7 @@ def resume_cmd(session_id: str) -> None:
 @click.option("--batch-size", default=None, type=int, help="Override batch size for uploads")
 @click.option("--workers", default=None, type=int, help="Number of parallel upload workers")
 @click.option("--dry-run", is_flag=True, default=False, help="Scan and report what would be uploaded, do not perform uploads")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Show detailed logging for debugging")
 @handle_cli_errors
 def upload_cmd(
     repo_id: str,
@@ -124,6 +125,7 @@ def upload_cmd(
     batch_size: int | None,
     workers: int | None,
     dry_run: bool,
+    verbose: bool,
 ):
     """Upload local segments (and optional CSV) into the HF dataset.
 
@@ -134,6 +136,9 @@ def upload_cmd(
 
     The command creates/uses a session checkpoint for resumable uploads.
     """
+    if verbose:
+        click.echo("[DEBUG] Verbose logging enabled")
+    
     if token:
         hf_token = token
     else:
@@ -145,6 +150,8 @@ def upload_cmd(
     total_size = summary["total_size"]
 
     click.echo(f"Found {total_files} audio files ({total_size} bytes) under {segments_dir}")
+    if verbose:
+        click.echo(f"[DEBUG] Species breakdown: {list(summary['by_species'].keys())}")
 
     if dry_run:
         click.echo("Dry run: no files will be uploaded. Showing first 20 files:")
@@ -230,11 +237,59 @@ def upload_cmd(
 
     click.echo("Starting upload of audio files...")
 
+    # Track progress with elapsed time
+    import time
+    start_time = time.time()
+    last_update = start_time
+    last_state = {}
+    
     def on_progress(state: dict) -> None:
-        click.echo(f"Progress: uploaded={state.get('uploaded')} skipped={state.get('skipped')} failed={state.get('failed')}", err=False)
+        nonlocal last_update, last_state
+        now = time.time()
+        # Update display every second or when state changes
+        if now - last_update >= 1.0 or state != last_state:
+            uploaded = state.get('uploaded', 0)
+            skipped = state.get('skipped', 0)
+            failed = state.get('failed', 0)
+            total = total_files
+            percent = int(100 * uploaded / max(total, 1))
+            elapsed = int(now - start_time)
+            click.echo(f"[{percent:3d}%] Uploaded: {uploaded}/{total} | Skipped: {skipped} | Failed: {failed} | Elapsed: {elapsed}s")
+            if verbose and state != last_state:
+                click.echo(f"[DEBUG] State changed: {state}")
+            last_update = now
+            last_state = state.copy()
 
-    result = uploader.upload_files(file_infos, remote_base=remote_base, batch_size=batch_size, on_progress=on_progress)
-    click.echo(json.dumps(result, ensure_ascii=True, indent=2))
+    try:
+        result = uploader.upload_files(file_infos, remote_base=remote_base, batch_size=batch_size, on_progress=on_progress)
+        
+        # Final summary
+        elapsed = int(time.time() - start_time)
+        uploaded = result.get("uploaded", 0)
+        skipped = result.get("skipped", 0)
+        failed = result.get("failed", 0)
+        
+        click.echo("\n" + "="*60)
+        click.echo("UPLOAD COMPLETE")
+        click.echo("="*60)
+        click.echo(f"Uploaded:  {uploaded} files")
+        click.echo(f"Skipped:   {skipped} files (already in dataset)")
+        click.echo(f"Failed:    {failed} files")
+        click.echo(f"Total:     {uploaded + skipped + failed} files")
+        click.echo(f"Time:      {elapsed} seconds")
+        if uploaded > 0:
+            rate = elapsed / uploaded if uploaded > 0 else 0
+            click.echo(f"Rate:      {rate:.1f}s per file")
+        click.echo("="*60)
+        
+        if failed > 0:
+            click.echo(f"\nWarning: {failed} file(s) failed to upload. Check the session checkpoint for details.")
+            click.echo(f"Session ID: {session.session_id}")
+        
+    except Exception as exc:
+        elapsed = int(time.time() - start_time)
+        click.echo(f"\nUpload interrupted after {elapsed}s")
+        raise click.ClickException(f"Upload failed: {exc}") from exc
 
 
 if __name__ == "__main__":

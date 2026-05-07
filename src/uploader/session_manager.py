@@ -100,3 +100,50 @@ class SessionManager:
             checkpoint["failed_files"].append({"remote_path": remote_path, "error": error})
             self.save_checkpoint(checkpoint)
             return checkpoint
+
+    def mark_chunk_uploaded(self, *, remote_path: str, chunk_index: int, chunk_bytes: int) -> dict[str, Any]:
+        """Track progress for chunked uploads of large files.
+        
+        Args:
+            remote_path: Remote file path in dataset
+            chunk_index: Zero-based chunk index
+            chunk_bytes: Number of bytes in this chunk
+        
+        Returns:
+            Updated checkpoint
+        """
+        with self._lock:
+            checkpoint = self.load_checkpoint()
+            checkpoint.setdefault("chunked_uploads", {})
+            
+            if remote_path not in checkpoint["chunked_uploads"]:
+                checkpoint["chunked_uploads"][remote_path] = {
+                    "chunks_completed": [],
+                    "total_bytes_uploaded": 0,
+                    "status": "in_progress"
+                }
+            
+            file_chunks = checkpoint["chunked_uploads"][remote_path]
+            file_chunks["chunks_completed"].append(chunk_index)
+            file_chunks["total_bytes_uploaded"] = int(file_chunks.get("total_bytes_uploaded", 0)) + chunk_bytes
+            file_chunks["last_chunk_at"] = datetime.now(UTC).isoformat()
+            
+            self.save_checkpoint(checkpoint)
+            return checkpoint
+
+    def get_chunk_status(self, remote_path: str) -> dict[str, Any]:
+        """Get upload status for a chunked file.
+        
+        Args:
+            remote_path: Remote file path in dataset
+        
+        Returns:
+            Chunk status dict with 'chunks_completed', 'total_bytes_uploaded', etc.
+        """
+        checkpoint = self.load_checkpoint()
+        chunked_uploads = checkpoint.get("chunked_uploads", {})
+        return chunked_uploads.get(remote_path, {
+            "chunks_completed": [],
+            "total_bytes_uploaded": 0,
+            "status": "not_started"
+        })

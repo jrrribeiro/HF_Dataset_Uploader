@@ -10,293 +10,293 @@ app_file: app.py
 pinned: false
 ---
 
-# BirdNET-Uploader-App
+# BirdNET Uploader
 
-BirdNET-Uploader-App is a focused tool for reliably uploading large audio collections and optional detection CSVs to Hugging Face datasets. It provides:
+A robust, resumable uploader for audio segments and detection metadata to Hugging Face datasets. Choose your upload path based on data size:
 
-- A unified Gradio web interface for small-to-medium uploads (single flow; CSV optional and auto-detected)
-- A Windows standalone container (downloadable) for large uploads without installing Python
-
-This repository contains a resumable uploader with deduplication, manifest/shard generation, and a simple web UI for convenience.
+- **Web Path** (~1 GB): Browser-based archive upload with live progress
+- **CLI Path** (unlimited): Local Windows portable or Python environment for large datasets
 
 ## Contents
 
-- [Overview](#overview)
-- [Validator App](#validator-app)
-- [Local Uploader CLI](#local-uploader-cli)
 - [Quick Start](#quick-start)
+- [Features](#features)
 - [Configuration](#configuration)
-- [Typical Flows](#typical-flows)
-- [Repository Structure](#repository-structure)
+- [Typical Workflows](#typical-workflows)
+- [CLI Reference](#cli-reference)
 - [Troubleshooting](#troubleshooting)
-- [Development Notes](#development-notes)
+- [Development](#development)
 
 ## Overview
 
-This repository is designed for two high-confidence operations:
+This repository is a focused tool for reliably uploading large audio collections and optional detection CSVs to Hugging Face datasets. It emphasizes:
 
-- controlled, multi-project human validation of detections
-- reliable, resumable upload of large audio datasets to Hugging Face
+- **Two upload paths**: Small archives via web UI (≤1 GB) or unlimited via CLI/Windows portable
+- **Resumable sessions**: Checkpoints stored locally allow recovery from interruptions
+- **Remote deduplication**: Hash-based checking prevents re-uploading files
+- **Live progress**: Real-time feedback during uploads
+- **Metadata generation**: Automatic manifest, CSV, and Parquet shard creation
 
-The validator workflow emphasizes:
+## Quick Start
 
-- controlled access by user and project
-- rapid decision flow for detections
-- auditability through append-only events
-- conflict-aware updates for concurrent validators
+### Web UI (Browser-Based, ≤1 GB)
 
-The uploader workflow emphasizes:
+1. Open [BirdNET Uploader on Hugging Face Spaces](https://huggingface.co/spaces/YOUR_ORG/birdnet-uploader)
+2. Enter your **Hugging Face token** (from [hf.co/settings/tokens](https://huggingface.co/settings/tokens))
+3. Specify your dataset **repo ID** (`username/dataset-name`)
+4. Upload a `.tar.gz`, `.zip`, or `.tar` archive containing audio files (optionally include a CSV)
+5. Watch live progress and get a summary when complete
 
-- single-flow login → repo → scan → upload
-- resumable sessions stored locally
-- remote deduplication with a local cache
-- progress tracking and checkpoint recovery
-- compatibility with the validator app's expected dataset structure
+**Note**: Archive size is limited to ~1 GB due to browser memory constraints. For larger datasets, use the Windows portable or CLI.
 
-## Validator App
+### Windows Portable (Unlimited Size)
 
-The validator is a Gradio application for human review of BirdNET detections in multi-project workflows.
+1. [Download the latest Windows release](https://github.com/jrrribeiro/BirdNET-Uploader-App/releases/latest)
+2. Extract `birdnet-uploader-windows.zip`
+3. Double-click `birdnet-uploader.exe` to launch the web UI
+   - Or use CLI commands: `birdnet-uploader login`, `birdnet-uploader upload --help`
 
-### Key Usability Features
-
-1. Multi-project login with role-based access
-2. Project selection for authorized datasets
-3. Detection queue with filters and pagination
-4. Audio loading on demand with ephemeral cache
-5. Fast validation actions (positive, negative, uncertain, skip)
-6. Concurrency-safe writes with optimistic lock feedback
-7. Conflict resolution support and validation reporting
-
-### Quick Start (Local)
-
-1. Create and activate a Python 3.11+ virtual environment.
-2. Install dependencies:
+### Local CLI (Python 3.11+)
 
 ```bash
+# Install
 pip install -r requirements.txt
+
+# Login (stores token securely)
+python app.py login
+
+# Upload local folder
+python app.py upload \
+  --repo-id username/dataset-name \
+  --segments /path/to/audio/folder \
+  --csv /path/to/detections.csv (optional) \
+  --workers 4
+
+# Check upload status
+python app.py resume <session-id>
 ```
 
-3. Run the app:
+## Features
+
+### Archive Upload (Web)
+- **Supported formats**: `.tar`, `.tar.gz`, `.zip`
+- **Size limit**: ~1 GB (due to browser constraints)
+- **Automatic extraction**: Archives are extracted server-side
+- **Live progress**: Real-time upload percentage with file counts
+
+### Large Dataset Upload (CLI)
+- **Unlimited size**: No practical file size limit
+- **Resumable sessions**: Stop and resume uploads without re-uploading
+- **Deduplication**: Remote hash checking prevents duplicate uploads
+- **Parallel workers**: Upload multiple files concurrently (default: 4)
+- **Progress tracking**: JSON checkpoints for recovery
+
+### Dataset Structure
+Both paths produce the same Hugging Face dataset structure:
+```
+dataset-repo/
+├── audio/              # Uploaded audio files (organized by species if CSV)
+├── index/
+│   ├── manifest.json   # Metadata summary
+│   ├── detections.csv  # Original detection metadata (if provided)
+│   └── shards/         # Parquet shards (10k rows each) for efficient indexing
+```
+
+## Configuration
+
+### Environment Variables
 
 ```bash
-python app.py
+# Web UI port (default: 7860)
+BIRDNET_UPLOADER_PORT=8000
+
+# CLI mode (use app.py as CLI instead of web UI)
+BIRDNET_UPLOADER_CLI=true
+
+# Session storage (default: ~/.birdnet-uploader/sessions)
+BIRDNET_UPLOADER_SESSION_DIR=/custom/path/sessions
+
+# Cache directory (default: ~/.birdnet-uploader/cache)
+BIRDNET_UPLOADER_CACHE_DIR=/custom/path/cache
+
+# Hugging Face token (alternative to secure storage)
+HF_TOKEN=hf_xxxxxxxxxxxx
 ```
 
-Default port is `7860`.
+## Typical Workflows
 
-### Runtime Configuration
+### Scenario 1: Small Archive Upload (≤1 GB)
+1. Create a `.tar.gz` archive of audio files with optional CSV
+2. Use web UI at [Hugging Face Spaces](https://huggingface.co/spaces/YOUR_ORG/birdnet-uploader)
+3. Paste token, enter dataset ID, upload archive
+4. **Done** - files appear in dataset within minutes
 
-Optional runtime configuration:
+### Scenario 2: Large Archive on Windows
+1. Create a `.tar.gz` or `.zip` archive (any size)
+2. Download and extract Windows portable
+3. Double-click `birdnet-uploader.exe` → launches web UI on localhost:7860
+4. Same workflow as web UI, but runs locally (no size limits)
 
-- `BIRDNET_DETECTIONS_FILE`: path to JSON file with detections grouped by project slug.
-- `BIRDNET_VALIDATIONS_DIR`: custom directory for append-only validation events and snapshot files.
-- `BIRDNET_PAGE_SIZE`: queue page size (default: `25`).
-- `BIRDNET_PROJECTS_FILE`: JSON file with project catalog used at app startup.
-- `BIRDNET_USER_ACCESS_FILE`: JSON file mapping users to project roles (`admin`/`validator`).
-- `BIRDNET_INVITES_FILE`: JSON file storing pending invites.
-- `BIRDNET_INVITE_TTL_HOURS`: invite expiration in hours (default: `72`).
-- `BIRDNET_BOOTSTRAP_DIR`: base directory for bootstrap state files (`projects.json`, `user_access.json`, `invites.json`).
-- `BIRDNET_ENABLE_DEMO_BOOTSTRAP`: set to `true` only for local/demo mode to load built-in sample users/projects.
+### Scenario 3: Local Folder Upload (CLI)
+1. Navigate to audio folder root in terminal
+2. Run: `python app.py upload --repo-id user/dataset --segments .`
+3. Watch progress in real-time
+4. Resume if interrupted: `python app.py resume <session-id>`
 
-Invite email settings (EmailJS):
+## CLI Reference
 
-- `BIRDNET_EMAILJS_ENABLED`: set to `true` to send invite emails via EmailJS.
-- `BIRDNET_INVITE_EMAIL_ENABLED`: set to `true` to enable invite delivery.
-- `BIRDNET_INVITE_EMAIL_SENDER`: sender label shown in the invite email.
-- `BIRDNET_INVITE_EMAIL_LOGIN_URL`: login URL included in invitation instructions.
-- `BIRDNET_EMAILJS_SERVICE_ID`: EmailJS service ID.
-- `BIRDNET_EMAILJS_TEMPLATE_ID`: default/fallback EmailJS template ID.
-- `BIRDNET_EMAILJS_TEMPLATE_ID_USERNAME_ONLY`: optional template for username-only mode.
-- `BIRDNET_EMAILJS_TEMPLATE_ID_EMAIL_ONLY`: optional template for email-only mode.
-- `BIRDNET_EMAILJS_TEMPLATE_ID_DUAL`: optional template for dual mode (username + email).
-- `BIRDNET_EMAILJS_PUBLIC_KEY`: EmailJS public key.
-- `BIRDNET_EMAILJS_ENDPOINT`: EmailJS API endpoint (default: `https://api.emailjs.com/api/v1.0/email/send`).
-- `BIRDNET_EMAILJS_TIMEOUT_SECONDS`: request timeout in seconds (default: `20`).
-
-### Validation Data Shapes
-
-Detection seed file example:
-
-```json
-{
-  "kenya-2024": [
-    {
-      "detection_key": "0000000000001001",
-      "audio_id": "audio_1001",
-      "scientific_name": "Cyanocorax cyanopogon",
-      "confidence": 0.91,
-      "start_time": 0.0,
-      "end_time": 1.0
-    }
-  ]
-}
-```
-
-Projects bootstrap file example (`BIRDNET_PROJECTS_FILE`):
-
-```json
-[
-  {
-    "project_slug": "kenya-2024",
-    "name": "Kenya Survey 2024",
-    "dataset_repo_id": "org/kenya-2024-dataset",
-    "active": true
-  }
-]
-```
-
-User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
-
-```json
-{
-  "admin_user": {
-    "kenya-2024": "admin"
-  },
-  "validator_a": {
-    "kenya-2024": "validator"
-  }
-}
-```
-
-### Typical Validation Flow
-
-1. Login with a valid user.
-2. Select an authorized project.
-3. Load queue items and apply filters when needed.
-4. Listen to selected audio and submit validation status.
-5. Resolve conflicts when concurrent updates occur.
-6. Export or inspect project validation report.
-
-### Deploy on Hugging Face Spaces
-
-1. Create a new Space with:
-- SDK: `Gradio`
-- Python: `3.11`
-
-2. Push this repository to the Space.
-
-3. Configure Variables/Secrets in the Space settings.
-
-Required for production bootstrap:
-
-- `BIRDNET_PROJECTS_FILE` (example: `docs/spaces/projects.sample.json`)
-- `BIRDNET_USER_ACCESS_FILE` (example: `docs/spaces/user_access.sample.json`)
-
-Optional runtime settings:
-
-- `BIRDNET_DETECTIONS_FILE` (seed detections JSON)
-- `BIRDNET_VALIDATIONS_DIR` (recommended: `/data/validations`)
-- `BIRDNET_BOOTSTRAP_DIR` (recommended: `/data/bootstrap`)
-- `BIRDNET_INVITES_FILE` (recommended: `/data/bootstrap/invites.json`)
-- `BIRDNET_INVITE_TTL_HOURS` (default `72`)
-- `BIRDNET_PAGE_SIZE` (default `25`)
-- `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
-
-Optional invite email settings:
-
-- `BIRDNET_INVITE_EMAIL_ENABLED=true`
-- `BIRDNET_INVITE_EMAIL_SENDER`
-- `BIRDNET_INVITE_EMAIL_LOGIN_URL`
-- `BIRDNET_EMAILJS_ENABLED`
-- `BIRDNET_EMAILJS_SERVICE_ID`
-- `BIRDNET_EMAILJS_TEMPLATE_ID`
-- `BIRDNET_EMAILJS_PUBLIC_KEY`
-- `BIRDNET_EMAILJS_ENDPOINT`
-- `BIRDNET_EMAILJS_TIMEOUT_SECONDS`
-
-4. For first smoke test only, you may temporarily set:
-
-- `BIRDNET_ENABLE_DEMO_BOOTSTRAP=true`
-
-Then log in with one of the demo users:
-
-- `admin_user`
-- `demo_user`
-- `validator_demo`
-
-5. After validation, switch to production bootstrap:
-
-- Set `BIRDNET_ENABLE_DEMO_BOOTSTRAP=false`
-- Provide real `BIRDNET_PROJECTS_FILE` and `BIRDNET_USER_ACCESS_FILE`
-
-Notes:
-
-- The app entrypoint reads `PORT` automatically in Spaces.
-- Keep user/project bootstrap files private if they contain sensitive assignments.
-- Use `/data` paths in Spaces to keep projects, invites, ACL, and validations across redeploys.
-- Collaborative access is token-per-user: each collaborator logs in with their own Hugging Face token.
-
-## Local Uploader CLI
-
-The repository also includes a local uploader CLI designed for large dataset ingest and resume support.
-
-### Release Pipeline
-
-The repository includes a release pipeline that produces a portable uploader bundle and can publish it to Hugging Face.
-
-One-command Windows pipeline:
-
-```powershell
-.\build\release_pipeline.ps1 -Version 0.1.0
-```
-
-Build and publish in one step:
-
-```powershell
-$env:HF_TOKEN = "hf_xxx"
-.\build\release_pipeline.ps1 -Version 0.1.0 -PublishToHf -RepoId jrrribeiro/birdnet-uploader-releases -RepoType dataset
-```
-
-Validation-only step (recommended before publish):
-
-```powershell
-.\build\validate_release.ps1 -Version 0.1.0
-```
-
-Local build steps:
+### Login
 
 ```bash
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python app.py login
+```
+Stores Hugging Face token securely in system keyring.
+
+### Upload
+
+```bash
+python app.py upload \
+  --repo-id user/dataset \
+  --segments /path/to/audio \
+  --csv /path/to/detections.csv \      # Optional
+  --workers 4 \                         # Default: 4
+  --session-id my-session \             # Optional: for resumable uploads
+  --remote-base my_audio_folder \       # Default: "audio"
+  --dry-run                             # Show what would be uploaded
+  --verbose                             # Detailed logging
+```
+
+### Scan
+
+```bash
+python app.py scan --segments /path/to/audio
+```
+Shows file count, total size, and species breakdown.
+
+### Resume
+
+```bash
+python app.py resume <session-id>
+```
+Checks session status and shows last checkpoint.
+
+### Init Repo
+
+```bash
+python app.py init-repo \
+  --repo-id user/dataset \
+  --private                             # Default: private
+```
+Creates dataset structure on Hugging Face.
+
+## Resumable Uploads
+
+Session checkpoints are saved locally as JSON. If an upload is interrupted:
+
+```bash
+# Check session status
+python app.py resume abc-session-id-xyz
+
+# Resume from last checkpoint (automatically skips already-uploaded files)
+python app.py upload \
+  --repo-id user/dataset \
+  --segments ./audio \
+  --session-id abc-session-id-xyz
+```
+
+Checkpoint location: `~/.birdnet-uploader/sessions/upload-YYYYMMDDTHHMMSSZ/checkpoint.json`
+
+## Authentication
+
+### Secure Token Storage
+- **First time**: `python app.py login` stores token in system keyring (Windows, macOS, Linux)
+- **Environment override**: `HF_TOKEN=hf_xxxx python app.py upload ...`
+- **Explicit flag**: `python app.py upload --token hf_xxxx ...`
+
+### Token Permissions
+Ensure your token has `write` permissions on the target dataset:
+1. Go to [hf.co/settings/tokens](https://huggingface.co/settings/tokens)
+2. Create or edit a token
+3. Set permissions: `repo > write` (not `read`)
+4. Restrict to specific repo if desired
+
+## Troubleshooting
+
+### "Upload exceeds 1 GB limit"
+- Switch to Windows portable or CLI for larger datasets
+- Compress archive more aggressively
+
+### "CSV upload failed"
+- Ensure CSV has proper headers and encoding (UTF-8)
+- File size should match audio files metadata (e.g., `audio_file` column)
+
+### "Session has no checkpoint"
+- Session ID may be invalid or expired
+- Check `~/.birdnet-uploader/sessions/` for available sessions
+- Restart upload without `--session-id` to create a new session
+
+### Network timeouts on large files
+- Use CLI with more workers: `--workers 8`
+- Check internet stability
+- Resume from checkpoint if interrupted
+
+## Development
+
+### Build Windows Portable
+
+```bash
+# Install build dependencies
 pip install pyinstaller
-python build/release_uploader.py --version 0.1.0
+
+# Build release
+python build/release_uploader.py --version 1.0.0
+
+# Output: build/release/birdnet-uploader-1.0.0-windows.zip
 ```
 
-The build produces:
-
-- a zipped release bundle under `build/release/`
-- a `.sha256` checksum file next to the zip
-
-To publish a release bundle to Hugging Face from a local machine:
+### Local Testing
 
 ```bash
-set HF_TOKEN=hf_xxx
-python build/publish_release_to_hf.py ^
-  --repo-id jrrribeiro/birdnet-uploader-releases ^
-  --repo-type dataset ^
-  --bundle build\release\birdnet-uploader-0.1.0-windows.zip ^
-  --checksum build\release\birdnet-uploader-0.1.0-windows.zip.sha256 ^
-  --version 0.1.0
+# Web UI
+python app.py
+
+# CLI
+python app.py --help
+python app.py login
+python app.py scan --segments ./test_audio
+python app.py upload --repo-id my-test/uploader --segments ./test_audio --dry-run
 ```
 
-Recommended Hugging Face release repo layout:
+## Architecture
 
-```text
-birdnet-uploader-releases/
-  releases/
-    v0.1.0/
-      birdnet-uploader-0.1.0-windows.zip
-      birdnet-uploader-0.1.0-windows.zip.sha256
-```
+### Core Components
 
-Workflow on GitHub Actions:
+- **`src/uploader/web_ui.py`**: Gradio interface for browser uploads
+- **`src/uploader/main.py`**: Click CLI for local uploads
+- **`src/uploader/batch_uploader.py`**: File upload orchestration with retries
+- **`src/uploader/session_manager.py`**: Checkpoint persistence and resumability
+- **`src/uploader/deduplicator.py`**: Remote hash checking to avoid re-uploads
+- **`src/uploader/scanner.py`**: Local folder scanning and metadata extraction
+- **`src/uploader/manifest.py`**: Dataset metadata and Parquet shard generation
 
-- run the release workflow manually
-- build the Windows executable with PyInstaller
-- archive the bundle as a workflow artifact
-- optionally upload the bundle and checksum to a Hugging Face repo
+### Data Flow
 
-Recommended user-facing validation after publishing:
+1. **Upload**: Archive extraction or folder scan
+2. **Deduplication**: Check remote hashes to skip existing files
+3. **Upload**: Push files to HF dataset in parallel
+4. **Metadata**: Generate and upload manifest + CSV + Parquet shards
+5. **Checkpoint**: Save session state for resumable recovery
+
+## Limitations
+
+- Web UI: ~1 GB per upload (browser constraint)
+- CSV: Must have `audio_file` or `file` column for audio file names
+- Audio formats: `.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`
+- Archive formats: `.tar`, `.tar.gz`, `.zip`
+
+## License
+
+[MIT License](LICENSE)
 
 1. Download the zip from Hugging Face.
 2. Unzip into a clean folder.
