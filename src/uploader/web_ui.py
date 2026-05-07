@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import List
 
@@ -17,6 +19,7 @@ from .deduplicator import Deduplicator
 from .batch_uploader import BatchUploader
 from .manifest import build_manifest_from_scan, manifest_to_bytes, write_shards_from_csv_rows
 from .session_manager import SessionManager
+from .config import WEB_UI_MAX_SIZE_BYTES
 
 
 def _store_uploaded_files(files: List, dst: Path) -> None:
@@ -47,7 +50,33 @@ def _store_uploaded_files(files: List, dst: Path) -> None:
                 continue
 
 
-def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, workers: int | None):
+def _extract_archive(archive_path: Path, extract_to: Path) -> bool:
+    """Extract tar, tar.gz, or zip archives. Returns True if extraction succeeded."""
+    try:
+        if archive_path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(extract_to)
+            return True
+        elif archive_path.suffix.lower() == ".gz":
+            # Handle .tar.gz
+            if archive_path.stem.endswith(".tar"):
+                with tarfile.open(archive_path, "r:gz") as tf:
+                    tf.extractall(extract_to)
+                return True
+            else:
+                return False
+        elif archive_path.suffix.lower() == ".tar":
+            with tarfile.open(archive_path, "r") as tf:
+                tf.extractall(extract_to)
+            return True
+        else:
+            return False
+    except Exception as exc:
+        print(f"Archive extraction error: {exc}")
+        return False
+
+
+def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, workers: int | None, progress=gr.Progress()):
     # Basic validation
     if not token or not repo_id:
         return "Error: token and repo_id are required." , None
@@ -55,7 +84,46 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
     # Store uploaded files to a temp directory
     tmpdir = Path(tempfile.mkdtemp(prefix="birdnet-upload-"))
     try:
+        progress(0, desc="Initializing upload...")
         _store_uploaded_files(files or [], tmpdir)
+
+        # Handle archive extraction: look for .tar, .tar.gz, .zip files
+        audio_dir = tmpdir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        
+        for uploaded_file in tmpdir.iterdir():
+            if uploaded_file.is_file():
+                suffix = uploaded_file.suffix.lower()
+                # Check for .tar.gz before .gz
+                if uploaded_file.name.endswith(".tar.gz"):
+                    progress(0.1, desc=f"Extracting {uploaded_file.name}...")
+                    if _extract_archive(uploaded_file, audio_dir):
+                        uploaded_file.unlink()  # Delete archive after extraction
+                    else:
+                        return f"Failed to extract {uploaded_file.name}", None
+                elif suffix in {".tar", ".gz", ".zip"}:
+                    progress(0.1, desc=f"Extracting {uploaded_file.name}...")
+                    if _extract_archive(uploaded_file, audio_dir):
+                        uploaded_file.unlink()  # Delete archive after extraction
+                    else:
+                        return f"Failed to extract {uploaded_file.name}", None
+                elif suffix == ".csv":
+                    # Keep CSV files as-is; handle them separately
+                    pass
+                else:
+                    # Assume non-archive, non-CSV files are audio files
+                    shutil.move(str(uploaded_file), str(audio_dir / uploaded_file.name))
+
+        # Validate total size for web UI (1GB limit)
+        total_size = sum(f.stat().st_size for f in audio_dir.rglob("*") if f.is_file())
+        if total_size > WEB_UI_MAX_SIZE_BYTES:
+            size_gb = total_size / (1024**3)
+            return (
+                f"Upload exceeds 1 GB limit ({size_gb:.2f} GB). "
+                "Please download the Windows standalone uploader for large archives: "
+                "https://github.com/jrrribeiro/BirdNET-Uploader-App/releases/latest/download/birdnet-uploader-windows.zip",
+                None
+            )
 
         csv_path = None
         if csv_file:
@@ -80,6 +148,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
         # Validate repo / create if necessary
         api = HfApi(token=token)
         repo_service = RepositoryService(token)
+        progress(0.2, desc="Validating repository...")
         validation = repo_service.validate_repo(repo_id)
         if not validation.get("is_valid"):
             # attempt to create required structure
@@ -89,14 +158,19 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
                 # fall back to warning
                 pass
 
-        # Build scan summary from files on disk
+        # Build scan summary from extracted/uploaded files
+        progress(0.3, desc="Scanning files...")
         scanner = LocalScanner()
-        # LocalScanner expects a directory of segments; use tmpdir
-        summary = scanner.scan_folder(str(tmpdir))
+        # Scan the audio_dir where all files are now consolidated
+        summary = scanner.scan_folder(str(audio_dir))
+        
+        total_files = summary.get("total_files", 0)
+        progress(0.4, desc=f"Found {total_files} audio files. Processing metadata...")
 
         # Upload CSV if present
         try:
             if csv_path:
+                progress(0.45, desc="Uploading detections CSV...")
                 api.upload_file(path_or_file=str(csv_path), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
         except Exception as exc:
             return f"CSV upload failed: {exc}", None
@@ -111,7 +185,9 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
                     reader = csv.DictReader(fh)
                     csv_rows = list(reader)
 
+            progress(0.5, desc="Building manifest...")
             manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
+            progress(0.55, desc="Uploading manifest...")
             api.upload_file(path_or_fileobj=manifest_to_bytes(manifest), path_in_repo="index/manifest.json", repo_id=repo_id, repo_type="dataset")
         except Exception as exc:
             return f"Manifest upload failed: {exc}", None
@@ -119,9 +195,11 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
         # Generate and upload shards if CSV provided
         try:
             if csv_path and csv_rows:
+                progress(0.6, desc="Generating shards...")
                 shards = write_shards_from_csv_rows(csv_rows)
-                for shard_path in shards:
+                for i, shard_path in enumerate(shards):
                     try:
+                        progress(0.6 + (0.1 * i / len(shards)), desc=f"Uploading shard {i+1}/{len(shards)}...")
                         api.upload_file(path_or_file=str(shard_path), path_in_repo=f"index/shards/{shard_path.name}", repo_id=repo_id, repo_type="dataset")
                     except Exception:
                         # continue with other shards
@@ -130,6 +208,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
             pass
 
         # Dedup + batch upload
+        progress(0.7, desc="Preparing uploads...")
         dedup = Deduplicator(api=api, repo_id=repo_id)
         session = SessionManager()
         uploader = BatchUploader(api=api, repo_id=repo_id, deduplicator=dedup, session=session, max_workers=workers)
@@ -140,12 +219,25 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
             for it in items:
                 file_infos.append({"full_path": it["full_path"], "relative_path": it["relative_path"], "size": it.get("size", 0)})
 
-        def on_progress(state: dict):
-            # for now, we don't stream progress; could integrate via websocket
-            pass
+        uploaded_count = [0]  # Use list to allow mutation in nested function
+        
+        def on_progress_update(state: dict):
+            uploaded = state.get("uploaded", 0)
+            skipped = state.get("skipped", 0)
+            failed = state.get("failed", 0)
+            total = len(file_infos)
+            progress(0.7 + (0.25 * uploaded / max(total, 1)), desc=f"Uploading: {uploaded}/{total} files")
 
-        result = uploader.upload_files(file_infos, remote_base=remote_base or "audio", on_progress=on_progress)
-        return f"Upload finished: {result}", result
+        progress(0.7, desc="Starting file uploads...")
+        result = uploader.upload_files(file_infos, remote_base=remote_base or "audio", on_progress=on_progress_update)
+        progress(0.95, desc="Finalizing...")
+        
+        uploaded = result.get("uploaded", 0)
+        skipped = result.get("skipped", 0)
+        failed = result.get("failed", 0)
+        status_msg = f"Upload finished! Uploaded: {uploaded}, Skipped: {skipped}, Failed: {failed}"
+        progress(1.0, desc="Complete")
+        return status_msg, result
     finally:
         # cleanup tempdir
         try:
@@ -171,8 +263,12 @@ def create_uploader_app():
             remote_base = gr.Textbox(label="Remote base path (default: audio)", value="audio")
 
         with gr.Group("Files"):
-            files = gr.File(label="Audio files (multiple)", file_count="multiple")
-            csv_file = gr.File(label="Optional detections CSV", file_count="single", file_types=[".csv"])
+            files = gr.File(
+                label="Audio files or archive (.tar/.tar.gz/.zip) with optional CSV",
+                file_count="multiple",
+                file_types=[".wav", ".mp3", ".flac", ".ogg", ".m4a", ".tar", ".tar.gz", ".zip"]
+            )
+            csv_file = gr.File(label="Optional detections CSV (or include in archive)", file_count="single", file_types=[".csv"])
 
         with gr.Row():
             workers = gr.Number(label="Parallel workers (for large uploads)", value=4)
@@ -182,10 +278,26 @@ def create_uploader_app():
             status = gr.Textbox(label="Status", interactive=False)
 
         with gr.Group("Download"):
-            gr.Markdown("[Download Windows standalone uploader (zip)](https://github.com/jrrribeiro/BirdNET-Uploader-App/releases/latest/download/birdnet-uploader-windows.zip)")
+            gr.Markdown("""
+## 💾 Windows Portable Download
 
-        def _start(token_val, repo_val, files_val, csv_val, remote_base_val, workers_val):
-            status_text, result = _handle_upload(token_val, repo_val, files_val, csv_val, remote_base_val, int(workers_val) if workers_val else None)
+Para uploads maiores (>1 GB) ou melhor performance, baixe o executável portátil:
+
+**[🔗 Download birdnet-uploader-1.0.0-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip)**
+
+- **Tamanho**: ~100 MB (sem Python necessário)
+- **Performance**: Upload ilimitado via CLI
+- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.0/birdnet-uploader-1.0.0-windows.zip.sha256)
+- **Instruções**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
+
+### 📋 Checksum SHA256
+```
+fb022851524b6c7cf05c2f403118ae833f77656643f01fffef768a59865db631
+```
+""")
+
+        def _start(token_val, repo_val, files_val, csv_val, remote_base_val, workers_val, progress=gr.Progress()):
+            status_text, result = _handle_upload(token_val, repo_val, files_val, csv_val, remote_base_val, int(workers_val) if workers_val else None, progress=progress)
             return status_text
 
         upload_btn.click(_start, inputs=[token, repo_id, files, csv_file, remote_base, workers], outputs=[status])
