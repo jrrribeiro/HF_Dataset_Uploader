@@ -11,22 +11,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 try:
-    from src.uploader.web_ui import create_uploader_app
-    from src.uploader.main import cli
-
-    # Determine mode
+    # Determine mode BEFORE importing Gradio (which is expensive)
     cli_mode = os.getenv("BIRDNET_UPLOADER_CLI", "").lower() in ("1", "true", "yes")
     has_args = len(sys.argv) > 1
     
     logger.info(f"Mode detection: cli_mode={cli_mode}, has_args={has_args}, argv={sys.argv}")
     
     if cli_mode or has_args:
-        # Run CLI
+        # Run CLI - only import what's needed for CLI
         logger.info("Starting in CLI mode")
+        from src.uploader.main import cli
         cli()
     else:
-        # Run web UI
+        # Run web UI - import Gradio only when needed
         logger.info("Starting in Web UI mode")
+        from src.uploader.web_ui import create_uploader_app
         app = create_uploader_app()
         port = int(os.getenv("PORT") or os.getenv("BIRDNET_UPLOADER_PORT") or "7860")
         host = os.getenv("BIRDNET_UPLOADER_HOST") or "0.0.0.0"

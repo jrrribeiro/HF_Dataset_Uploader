@@ -10,7 +10,7 @@ from .hash_utils import compute_file_hash
 class LocalScanner:
     """Scan local directories and group files by inferred species."""
 
-    def scan_folder(self, folder_path: str) -> dict[str, Any]:
+    def scan_folder(self, folder_path: str, *, include_hashes: bool = False) -> dict[str, Any]:
         root_path = Path(folder_path).resolve()
         by_species: dict[str, list[dict[str, Any]]] = {}
         total_files = 0
@@ -32,8 +32,9 @@ class LocalScanner:
                     "relative_path": relative_path.as_posix(),
                     "species": species,
                     "size": full_path.stat().st_size,
-                    "sha256": compute_file_hash(full_path),
                 }
+                if include_hashes:
+                    item["sha256"] = compute_file_hash(full_path)
                 by_species.setdefault(species, []).append(item)
                 total_files += 1
                 total_size += item["size"]

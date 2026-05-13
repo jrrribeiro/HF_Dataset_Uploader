@@ -1,0 +1,28 @@
+[DEBUG] Verbose logging enabled
+Found 1 audio files (32044 bytes) under .\test_upload_segments
+[DEBUG] Species breakdown: ['speciesA']
+[INFO] birdnet_uploader.repo_service: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3 (attempt 1)
+[WARNING] birdnet_uploader.repo_service: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3 failed on attempt 1: HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=5)
+[INFO] birdnet_uploader.repo_service: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3 (attempt 2)
+[INFO] birdnet_uploader.repo_service: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3 -> 200 in 1.48s
+[INFO] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json (attempt 1)
+[INFO] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json -> 200 in 0.81s
+[WARNING] huggingface_hub.utils._http: '[WinError 10060] Uma tentativa de conex├úo falhou porque o componente conectado n├úo respondeu
+
+corretamente ap├│s um per├¡odo de tempo ou a conex├úo estabelecida falhou
+
+porque o host conectado n├úo respondeu' thrown while requesting POST https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3/preupload/main
+[WARNING] huggingface_hub.utils._http: Retrying in 1s [Retry 1/5].
+'[WinError 10060] Uma tentativa de conex├úo falhou porque o componente conectado n├úo respondeu
+
+corretamente ap├│s um per├¡odo de tempo ou a conex├úo estabelecida falhou
+
+porque o host conectado n├úo respondeu' thrown while requesting POST https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3/preupload/main
+Retrying in 1s [Retry 1/5].
+[INFO] httpx: HTTP Request: POST https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3/preupload/main "HTTP/1.1 200 OK"
+[WARNING] huggingface_hub.hf_api: No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+[INFO] httpx: HTTP Request: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3/revision/main "HTTP/1.1 200 OK"
+Manifest uploaded: index/manifest.json
+Starting upload of audio files...
+[INFO] httpx: HTTP Request: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"

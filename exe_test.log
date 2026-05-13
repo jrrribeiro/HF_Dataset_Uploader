@@ -1,0 +1,21 @@
+2026-05-07 15:40:01,692 - ERROR - FATAL ERROR: No module named 'src.uploader.web_ui'
+2026-05-07 15:40:01,695 - ERROR - Traceback (most recent call last):
+  File "app.py", line 14, in <module>
+    from src.uploader.web_ui import create_uploader_app
+ModuleNotFoundError: No module named 'src.uploader.web_ui'
+
+
+============================================================
+ERROR: No module named 'src.uploader.web_ui'
+============================================================
+Details:
+Traceback (most recent call last):
+  File "app.py", line 14, in <module>
+    from src.uploader.web_ui import create_uploader_app
+ModuleNotFoundError: No module named 'src.uploader.web_ui'
+
+
+For debugging, see: ~/.birdnet-uploader/logs/
+Or run: python debug.bat
+
+Press Enter to close...

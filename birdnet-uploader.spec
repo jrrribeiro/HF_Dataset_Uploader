@@ -1,15 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files
+from pathlib import Path
+
+datas = []
+datas += collect_data_files('gradio')
+datas += collect_data_files('gradio_client')
+datas += collect_data_files('safehttpx')
+datas += collect_data_files('groovy')
+
+gradio_root = Path(r'C:\Users\jonat\Documents\Python\BirdNET-Uploader-App\.venv\Lib\site-packages\gradio')
+for py_file in gradio_root.rglob('*.py'):
+    relative_dir = py_file.parent.relative_to(gradio_root)
+    datas.append((str(py_file), str(Path('gradio') / relative_dir)))
 
 a = Analysis(
-    ['C:\\Users\\jonat\\Documents\\Python\\BirdNET-validator-App\\app.py'],
+    ['C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\build\\runtime_hook_gradio_patch.py'],
     excludes=[],
     noarchive=False,
     optimize=0,

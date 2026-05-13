@@ -2,29 +2,37 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+import logging
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import threading
 
-from huggingface_hub import HfApi
+if TYPE_CHECKING:
+    from huggingface_hub import HfApi
 
 from .config import get_cache_root
 from .hash_utils import compute_file_hash
 from .exceptions import ValidationError
 
 
+logger = logging.getLogger("birdnet_uploader.deduplicator")
+
+
 class Deduplicator:
     """Check remote file presence and cache the remote path index locally."""
 
-    def __init__(self, api: HfApi, repo_id: str, *, repo_type: str = "dataset") -> None:
+    def __init__(self, api: Any, repo_id: str, *, repo_type: str = "dataset") -> None:
         self._api = api
         self.repo_id = repo_id
         self.repo_type = repo_type
         self._remote_paths: set[str] | None = None
         self._decision_cache: dict[str, dict[str, Any]] = {}
         self.cache_path = self._build_cache_path()
-        self._lock = threading.Lock()
+        # RLock avoids deadlock when refresh_remote_index is called while lock is already held.
+        self._lock = threading.RLock()
 
     def _build_cache_path(self) -> Path:
         cache_root = get_cache_root() / "dedup"
@@ -54,9 +62,36 @@ class Deduplicator:
 
     def refresh_remote_index(self) -> set[str]:
         try:
-            repo_files = self._api.list_repo_files(repo_id=self.repo_id, repo_type=self.repo_type)
+            # Run list_repo_files in a short-lived thread so we don't block forever on network issues.
+            timeout = float(os.getenv("BNU_LIST_REPO_TIMEOUT", "10"))
+            result: dict[str, Any] = {"value": None, "exc": None}
+
+            def _target() -> None:
+                try:
+                    result["value"] = self._api.list_repo_files(repo_id=self.repo_id, repo_type=self.repo_type)
+                except Exception as exc:  # pragma: no cover - network behavior
+                    result["exc"] = exc
+
+            t = threading.Thread(target=_target, daemon=True)
+            t.start()
+            t.join(timeout)
+            if t.is_alive():
+                raise TimeoutError(f"list_repo_files timed out after {timeout}s")
+            if result["exc"] is not None:
+                raise result["exc"]
+            repo_files = result["value"]
         except Exception as exc:  # pragma: no cover - external API behavior
-            raise ValidationError(f"Could not read remote file listing for {self.repo_id}: {exc}") from exc
+            # Fail-open: if listing remote files is unavailable, continue upload path
+            # and rely on server-side conflict handling. This avoids blocking uploads
+            # on flaky network/listing endpoints.
+            logger.warning(
+                "Could not read remote file listing for %s (continuing without dedup index): %s",
+                self.repo_id,
+                exc,
+            )
+            with self._lock:
+                self._remote_paths = set()
+            return set()
 
         remote_paths = {str(path) for path in repo_files}
         with self._lock:

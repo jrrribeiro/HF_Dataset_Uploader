@@ -1,0 +1,133 @@
+2026-05-07 16:18:53,719 - ERROR - FATAL ERROR: [Errno 2] No such file or directory: 'C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\_internal\\groovy\\version.txt'
+2026-05-07 16:18:53,732 - ERROR - Traceback (most recent call last):
+  File "app.py", line 14, in <module>
+    from src.uploader.web_ui import create_uploader_app
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "src\uploader\web_ui.py", line 11, in <module>
+    import gradio as gr
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\__init__.py", line 3, in <module>
+    import gradio._simple_templates
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\_simple_templates\__init__.py", line 1, in <module>
+    from .simpledropdown import SimpleDropdown
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\_simple_templates\simpledropdown.py", line 7, in <module>
+    from gradio.components.base import Component, FormComponent
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\components\__init__.py", line 1, in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\components\annotated_image.py", line 15, in <module>
+    from gradio.components.base import Component
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\components\base.py", line 21, in <module>
+    from gradio.blocks import Block, BlockContext
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\blocks.py", line 32, in <module>
+    from groovy import transpile
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "groovy\__init__.py", line 5, in <module>
+  File "pathlib\_local.py", line 546, in read_text
+  File "pathlib\_abc.py", line 632, in read_text
+  File "pathlib\_local.py", line 537, in open
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\_internal\\groovy\\version.txt'
+
+
+============================================================
+ERROR: [Errno 2] No such file or directory: 'C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\_internal\\groovy\\version.txt'
+============================================================
+Details:
+Traceback (most recent call last):
+  File "app.py", line 14, in <module>
+    from src.uploader.web_ui import create_uploader_app
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "src\uploader\web_ui.py", line 11, in <module>
+    import gradio as gr
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\__init__.py", line 3, in <module>
+    import gradio._simple_templates
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\_simple_templates\__init__.py", line 1, in <module>
+    from .simpledropdown import SimpleDropdown
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\_simple_templates\simpledropdown.py", line 7, in <module>
+    from gradio.components.base import Component, FormComponent
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\components\__init__.py", line 1, in <module>
+    from gradio.components.annotated_image import AnnotatedImage
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\components\annotated_image.py", line 15, in <module>
+    from gradio.components.base import Component
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\components\base.py", line 21, in <module>
+    from gradio.blocks import Block, BlockContext
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "gradio\blocks.py", line 32, in <module>
+    from groovy import transpile
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "pyimod02_importers.py", line 457, in exec_module
+  File "groovy\__init__.py", line 5, in <module>
+  File "pathlib\_local.py", line 546, in read_text
+  File "pathlib\_abc.py", line 632, in read_text
+  File "pathlib\_local.py", line 537, in open
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\_internal\\groovy\\version.txt'
+
+
+For debugging, see: ~/.birdnet-uploader/logs/
+Or run: python debug.bat
+Press Enter to close...

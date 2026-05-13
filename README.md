@@ -12,10 +12,10 @@ pinned: false
 
 # BirdNET Uploader
 
-A robust, resumable uploader for audio segments and detection metadata to Hugging Face datasets. Choose your upload path based on data size:
+A robust uploader for audio segments and detection metadata to Hugging Face datasets. Choose your upload path based on data size:
 
 - **Web Path** (~1 GB): Browser-based archive upload with live progress
-- **CLI Path** (unlimited): Local Windows portable or Python environment for large datasets
+- **CLI Path** (unlimited): Direct folder upload for large datasets and Windows portable use
 
 ## Contents
 
@@ -31,11 +31,11 @@ A robust, resumable uploader for audio segments and detection metadata to Huggin
 
 This repository is a focused tool for reliably uploading large audio collections and optional detection CSVs to Hugging Face datasets. It emphasizes:
 
-- **Two upload paths**: Small archives via web UI (≤1 GB) or unlimited via CLI/Windows portable
+- **Two upload paths**: Small archives via web UI (≤1 GB) or direct folder uploads via CLI/Windows portable
 - **Resumable sessions**: Checkpoints stored locally allow recovery from interruptions
-- **Remote deduplication**: Hash-based checking prevents re-uploading files
+- **Fast direct uploads**: The CLI uploads the chosen folder directly to the dataset without packing it into a single archive
 - **Live progress**: Real-time feedback during uploads
-- **Metadata generation**: Automatic manifest, CSV, and Parquet shard creation
+- **Optional metadata**: CSV uploads remain supported, but manifest/shard generation is only for legacy workflows
 
 ## Quick Start
 
@@ -88,20 +88,17 @@ python app.py resume <session-id>
 
 ### Large Dataset Upload (CLI)
 - **Unlimited size**: No practical file size limit
-- **Resumable sessions**: Stop and resume uploads without re-uploading
-- **Deduplication**: Remote hash checking prevents duplicate uploads
-- **Parallel workers**: Upload multiple files concurrently (default: 4)
-- **Progress tracking**: JSON checkpoints for recovery
+- **Direct folder streaming**: Uploads the local folder directly to the dataset path you choose
+- **Parallel workers**: Optimized Hub-side transfer and retries for large uploads
+- **Progress tracking**: Folder-level status and local checkpoints for recovery metadata
 
 ### Dataset Structure
-Both paths produce the same Hugging Face dataset structure:
+The direct CLI path uploads your local folder structure as-is into the dataset, typically under `audio/`:
 ```
 dataset-repo/
 ├── audio/              # Uploaded audio files (organized by species if CSV)
-├── index/
-│   ├── manifest.json   # Metadata summary
-│   ├── detections.csv  # Original detection metadata (if provided)
-│   └── shards/         # Parquet shards (10k rows each) for efficient indexing
+└── index/
+  └── detections.csv  # Optional metadata CSV uploaded directly, if provided
 ```
 
 ## Configuration
@@ -114,6 +111,9 @@ BIRDNET_UPLOADER_PORT=8000
 
 # CLI mode (use app.py as CLI instead of web UI)
 BIRDNET_UPLOADER_CLI=true
+
+# High-throughput Xet mode for large uploads
+HF_XET_HIGH_PERFORMANCE=1
 
 # Session storage (default: ~/.birdnet-uploader/sessions)
 BIRDNET_UPLOADER_SESSION_DIR=/custom/path/sessions
@@ -160,10 +160,11 @@ Stores Hugging Face token securely in system keyring.
 python app.py upload \
   --repo-id user/dataset \
   --segments /path/to/audio \
-  --csv /path/to/detections.csv \      # Optional
-  --workers 4 \                         # Default: 4
-  --session-id my-session \             # Optional: for resumable uploads
+  --csv /path/to/detections.csv \      # Optional, uploaded directly as index/detections.csv
+  --workers 4 \                         # Default: 4 (legacy mode only)
+  --session-id my-session \             # Optional metadata checkpoint
   --remote-base my_audio_folder \       # Default: "audio"
+  --upload-mode direct \                # Default: direct folder upload
   --dry-run                             # Show what would be uploaded
   --verbose                             # Detailed logging
 ```

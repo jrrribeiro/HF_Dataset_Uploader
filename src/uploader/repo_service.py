@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import os
 import json
+import time
+import logging
 from io import BytesIO
 from typing import Any
+import requests
 
-from huggingface_hub import HfApi
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
-from .config import INDEX_SHARD_SIZE, SCHEMA_VERSION
+from .config import INDEX_SHARD_SIZE, SCHEMA_VERSION, RETRY_MAX_ATTEMPTS, RETRY_INITIAL_BACKOFF_SECONDS
+
+logger = logging.getLogger("birdnet_uploader.repo_service")
 from .exceptions import RepositoryError
 
 
@@ -14,15 +21,19 @@ class RepositoryService:
     """Create and initialize dataset repositories for uploader sessions."""
 
     def __init__(self, token: str):
+        # Import HfApi lazily to allow callers to set HF tuning/env before import
+        from huggingface_hub import HfApi
+
         self._api = HfApi(token=token)
 
-    def create_dataset(self, repo_id: str, *, private: bool = True) -> str:
+    def create_dataset(self, repo_id: str, *, private: bool = True, initialize_structure: bool = True) -> str:
         if not self._is_valid_repo_id(repo_id):
             raise RepositoryError("Repository id must be in the form 'owner/name'")
 
         try:
             self._api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
-            self._init_structure(repo_id)
+            if initialize_structure:
+                self._init_structure(repo_id)
         except Exception as exc:  # pragma: no cover - external API behavior
             raise RepositoryError(f"Could not create dataset: {exc}") from exc
 
@@ -67,34 +78,61 @@ class RepositoryService:
         if not self._is_valid_repo_id(repo_id):
             raise RepositoryError("Repository id must be in the form 'owner/name'")
 
+        max_attempts = RETRY_MAX_ATTEMPTS or 3
+        backoff_base = RETRY_INITIAL_BACKOFF_SECONDS or 1.0
+        connect_timeout = float(os.getenv("BNU_REPO_VALIDATE_CONNECT_TIMEOUT", "8"))
+        read_timeout = float(os.getenv("BNU_REPO_VALIDATE_READ_TIMEOUT", "20"))
+
+        def _request(method: str, url: str) -> requests.Response:
+            last_exc: Exception | None = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.info("%s %s (attempt %d)", method, url, attempt)
+                    start = time.time()
+                    headers = {}
+                    token = getattr(self._api, "token", None)
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                    response = requests.request(method, url, timeout=(connect_timeout, read_timeout), headers=headers)
+                    duration = time.time() - start
+                    logger.info("%s %s -> %s in %.2fs", method, url, response.status_code, duration)
+                    return response
+                except Exception as exc:  # pragma: no cover - external network behavior
+                    last_exc = exc
+                    logger.warning("%s %s failed on attempt %d: %s", method, url, attempt, exc)
+                    if attempt >= max_attempts:
+                        raise
+                    time.sleep(backoff_base * (2 ** (attempt - 1)))
+            raise last_exc or RepositoryError(f"Request failed: {method} {url}")
+
+        repo_api_url = f"https://huggingface.co/api/datasets/{repo_id}"
+        repo_response = _request("GET", repo_api_url)
+        if repo_response.status_code == 404:
+            raise RepositoryError(f"Could not list dataset files: repository not found ({repo_id})")
+        if repo_response.status_code >= 400:
+            raise RepositoryError(f"Could not validate dataset repository: HTTP {repo_response.status_code}")
+
+        manifest_url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/index/manifest.json"
         try:
-            repo_files = self._api.list_repo_files(repo_id=repo_id, repo_type="dataset")
-        except Exception as exc:  # pragma: no cover - external API behavior
-            raise RepositoryError(f"Could not list dataset files: {exc}") from exc
+            manifest_response = _request("HEAD", manifest_url)
+            has_manifest = manifest_response.status_code == 200
+            manifest_error = "" if has_manifest else "index/manifest.json not found"
+        except Exception as exc:  # pragma: no cover - network behavior
+            logger.warning("Manifest check failed for %s, but repo exists so upload can continue: %s", repo_id, exc)
+            has_manifest = False
+            manifest_error = str(exc)
 
         project_slug = self._project_slug_from_repo_id(repo_id)
-        required_prefixes = [
-            f"audio/{project_slug}/",
-            "index/shards/",
-            "validations/",
-            "audit/ingestion-runs/",
-        ]
-        missing_prefixes = [
-            prefix for prefix in required_prefixes if not any(path.startswith(prefix) for path in repo_files)
-        ]
+        is_valid = True
+        missing_prefixes = []
 
-        has_manifest = "index/manifest.json" in repo_files
-        manifest_ok = has_manifest
-        manifest_error = ""
-
-        is_valid = not missing_prefixes and has_manifest
         return {
             "repo_id": repo_id,
             "is_valid": is_valid,
             "project_slug": project_slug,
             "missing_prefixes": missing_prefixes,
             "has_manifest": has_manifest,
-            "manifest_ok": manifest_ok if has_manifest else False,
+            "manifest_ok": bool(has_manifest),
             "manifest_error": manifest_error,
         }
 

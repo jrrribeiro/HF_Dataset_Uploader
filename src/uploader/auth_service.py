@@ -4,7 +4,6 @@ import os
 from typing import Any
 
 import keyring
-from huggingface_hub import HfApi
 
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE, TOKEN_ENV_VAR
 from .exceptions import AuthenticationError
@@ -28,6 +27,9 @@ class AuthService:
             raise AuthenticationError("Token is required")
 
         try:
+            # Import HfApi lazily so caller can configure HF-related monkeypatches/timeouts first
+            from huggingface_hub import HfApi
+
             api = HfApi(token=token)
             whoami = api.whoami()
         except Exception as exc:  # pragma: no cover - external API behavior

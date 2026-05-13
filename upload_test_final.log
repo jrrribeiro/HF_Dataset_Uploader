@@ -1,0 +1,8 @@
+2026-05-07 17:26:39,186 - INFO - HTTP Request: GET https://api.gradio.app/gradio-messaging/en "HTTP/1.1 200 OK"
+2026-05-07 17:26:39,853 - INFO - Mode detection: cli_mode=False, has_args=True, argv=['C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\birdnet-uploader.exe', 'upload', '--repo-id', 'jrrribeiro/ppbio_teste3', '--segments', '.\\test_upload_segments', '--verbose']
+2026-05-07 17:26:39,853 - INFO - Starting in CLI mode
+[DEBUG] Verbose logging enabled
+Found 1 audio files (32044 bytes) under .\test_upload_segments
+[DEBUG] Species breakdown: ['speciesA']
+2026-05-07 17:26:40,356 - INFO - HTTP Request: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3/tree/main?recursive=true&expand=false "HTTP/1.1 404 Not Found"
+Error: Unexpected error: 'charmap' codec can't encode characters in position 0-1: character maps to <undefined>

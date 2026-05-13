@@ -2,26 +2,50 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
+import safehttpx
+import groovy
+
 
 block_cipher = None
 project_root = Path.cwd()
+safehttpx_package = Path(safehttpx.__file__).parent
+groovy_package = Path(groovy.__file__).parent
+
+gradio_datas, gradio_binaries, gradio_hiddenimports = collect_all("gradio")
+gradio_client_datas, gradio_client_binaries, gradio_client_hiddenimports = collect_all("gradio_client")
+huggingface_datas, huggingface_binaries, huggingface_hiddenimports = collect_all("huggingface_hub")
+safehttpx_datas, safehttpx_binaries, safehttpx_hiddenimports = collect_all("safehttpx")
 
 
 a = Analysis(
     [str(project_root / "app.py")],
     pathex=[str(project_root)],
-    binaries=[],
-    datas=[],
+    datas=gradio_datas + gradio_client_datas + huggingface_datas + safehttpx_datas + [(str(project_root / "src"), "src"), (str(safehttpx_package), "safehttpx"), (str(groovy_package), "groovy")],
+    binaries=gradio_binaries + gradio_client_binaries + huggingface_binaries + safehttpx_binaries,
     hiddenimports=[
+        "src",
+        "src.uploader",
         "click",
         "gradio",
+        "gradio.events",
+        "gradio.blocks",
+        "gradio.interface",
         "huggingface_hub",
+        "huggingface_hub.hf_api",
+        *gradio_hiddenimports,
+        *gradio_client_hiddenimports,
+        *huggingface_hiddenimports,
+        *safehttpx_hiddenimports,
         "keyring",
         "pydantic",
         "pandas",
         "pyarrow",
         "fastapi",
         "starlette",
+        "uvicorn",
+        "httpx",
         "src.uploader",
         "src.uploader.auth_service",
         "src.uploader.batch_uploader",

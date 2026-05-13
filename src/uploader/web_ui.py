@@ -10,9 +10,15 @@ from typing import List
 
 import gradio as gr
 
-from huggingface_hub import HfApi
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
 from .auth_service import AuthService
+from .hf_tuning import configure_hf_http_backoff
+
+# Apply HF http_backoff tuning before importing modules that may import huggingface_hub
+configure_hf_http_backoff()
+
 from .repo_service import RepositoryService
 from .scanner import LocalScanner
 from .deduplicator import Deduplicator
@@ -312,29 +318,29 @@ def create_uploader_app():
 
         with gr.Group("Download"):
             gr.Markdown("""
-## 💾 Windows Portable Download
+## [DOWNLOAD] Windows Portable Download
 
-Para uploads maiores (>1 GB) ou melhor performance, baixe o executável portátil:
+Para uploads maiores (>1 GB) ou melhor performance, baixe o executavel portatil:
 
-**[🔗 Download birdnet-uploader-1.0.4-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip)**
+**[Download birdnet-uploader-1.0.4-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip)**
 
-- **Tamanho**: ~109 MB (sem Python necessário)
+- **Tamanho**: ~109 MB (sem Python necessario)
 - **Performance**: Upload ilimitado via CLI
-- **Segurança**: Checksum disponível [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip.sha256)
-- **Instruções**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
+- **Seguranca**: Checksum disponivel [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip.sha256)
+- **Instrucoes**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
 - **Troubleshooting**: [Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/TROUBLESHOOTING.md)
 
-### 📋 Checksum SHA256
+### [INFO] Checksum SHA256
 ```
 71d126edf726298ed25d4b72b5364e85fa6b1e76157c4f1ee0ab76b4a653f359
 ```
 
 ### ⚡ Novidades na v1.0.4
-- ✅ **CRÍTICO**: Gradio agora incluído no exe (antes faltava!)
-- ✅ **Melhorado**: Timeout aumentado para uploads longos
-- ✅ **Corrigido**: Parâmetro API de batch_uploader (path_or_file → path_or_fileobj)
-- ✅ Melhorado: Tratamento de erros durante uploads""")
-- ✅ Adicionado: test_imports.py para diagnóstico
+- [OK] **CRITICO**: Gradio agora incluido no exe (antes faltava!)
+- [OK] **Melhorado**: Timeout aumentado para uploads longos
+- [OK] **Corrigido**: Parametro API de batch_uploader (path_or_file -> path_or_fileobj)
+- [OK] Melhorado: Tratamento de erros durante uploads
+- [OK] Adicionado: test_imports.py para diagnostico
 """)
 
         def _start(token_val, repo_val, files_val, csv_val, remote_base_val, workers_val, progress=gr.Progress()):

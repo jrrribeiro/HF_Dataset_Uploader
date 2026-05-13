@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import os
 import json
+import time
+import threading
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
 import click
+import logging
+import sys
+
+from .hf_tuning import configure_hf_http_backoff
+from .config import AUDIO_EXTENSIONS
+
+# Ensure HF backoff tuning is applied before importing modules that may import huggingface_hub
+configure_hf_http_backoff()
 
 from .auth_service import AuthService
 from .error_handler import build_error_message
@@ -112,6 +123,13 @@ def resume_cmd(session_id: str) -> None:
 @click.option("--remote-base", default="audio", show_default=True, help="Remote base path inside the dataset")
 @click.option("--batch-size", default=None, type=int, help="Override batch size for uploads")
 @click.option("--workers", default=None, type=int, help="Number of parallel upload workers")
+@click.option(
+    "--upload-mode",
+    type=click.Choice(["direct", "legacy"], case_sensitive=False),
+    default="direct",
+    show_default=True,
+    help="direct uploads the folder as-is; legacy keeps manifest/index generation",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Scan and report what would be uploaded, do not perform uploads")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show detailed logging for debugging")
 @handle_cli_errors
@@ -124,6 +142,7 @@ def upload_cmd(
     remote_base: str,
     batch_size: int | None,
     workers: int | None,
+    upload_mode: str,
     dry_run: bool,
     verbose: bool,
 ):
@@ -138,11 +157,19 @@ def upload_cmd(
     """
     if verbose:
         click.echo("[DEBUG] Verbose logging enabled")
-    
-    if token:
-        hf_token = token
-    else:
-        hf_token = AuthService().require_token()
+        click.echo(f"[DEBUG] CLI module: {__file__}")
+        # Configure logging to stdout so instrumented loggers are visible
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="[%(levelname)s] %(name)s: %(message)s")
+        # Enable more verbose HTTP/hub logs to help debugging network issues
+        logging.getLogger("huggingface_hub").setLevel(logging.DEBUG)
+        logging.getLogger("urllib3").setLevel(logging.DEBUG)
+        logging.getLogger("requests").setLevel(logging.DEBUG)
+
+    # Keep HF Hub requests from hanging for too long on slow or unreachable links.
+    # These are read by huggingface_hub at import time, so set them before any hub calls.
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+    configure_hf_http_backoff()
 
     scanner = LocalScanner()
     summary = scanner.scan_folder(segments_dir)
@@ -168,6 +195,12 @@ def upload_cmd(
             click.echo(f"Would also upload CSV: {csv_file} -> index/detections.csv")
         return
 
+    # Resolve token after dry-run check so we can scan without requiring network auth
+    if token:
+        hf_token = token
+    else:
+        hf_token = AuthService().require_token()
+
     api = None
     try:
         from huggingface_hub import HfApi
@@ -176,30 +209,229 @@ def upload_cmd(
     except Exception as exc:  # pragma: no cover - external
         raise click.ClickException(build_error_message(exc)) from exc
 
+    # Safety-first normalization: direct is always the default unless legacy is explicitly requested.
+    upload_mode = (upload_mode or "direct").strip().lower()
+    use_legacy_mode = upload_mode == "legacy"
+    if verbose:
+        click.echo(f"[DEBUG] Effective upload mode: {'legacy' if use_legacy_mode else 'direct'}")
+
+    if not use_legacy_mode:
+        create_attempts = int(os.getenv("BNU_REPO_CREATE_ATTEMPTS", "3"))
+        create_backoff = float(os.getenv("BNU_REPO_CREATE_BACKOFF", "1.0"))
+        last_create_exc: Exception | None = None
+        for attempt in range(1, create_attempts + 1):
+            try:
+                api.create_repo(repo_id=repo_id, repo_type="dataset", private=True, exist_ok=True)
+                click.echo("[OK] Dataset repository ready for direct folder upload")
+                last_create_exc = None
+                break
+            except Exception as exc:
+                last_create_exc = exc
+                if attempt >= create_attempts:
+                    break
+                wait_s = create_backoff * (2 ** (attempt - 1))
+                if verbose:
+                    click.echo(f"[DEBUG] create_repo failed (attempt {attempt}/{create_attempts}): {exc}. Retrying in {wait_s:.1f}s")
+                time.sleep(wait_s)
+
+        if last_create_exc is not None:
+            msg = str(last_create_exc).lower()
+            network_like = (
+                "timed out" in msg
+                or "timeout" in msg
+                or "winerror 10060" in msg
+                or "max retries exceeded" in msg
+            )
+            if network_like:
+                click.echo(f"[WARN] Could not validate/create repo due to network timeout: {last_create_exc}")
+                click.echo("[WARN] Continuing direct folder upload attempt anyway...")
+            else:
+                raise click.ClickException(f"Could not create or access dataset repository: {last_create_exc}") from last_create_exc
+
+        def _upload_file_with_retry(path_or_fileobj: Any, path_in_repo: str) -> None:
+            max_attempts = int(os.getenv("BNU_HUB_UPLOAD_ATTEMPTS", "3"))
+            timeout_s = float(os.getenv("BNU_HUB_UPLOAD_TIMEOUT", "90"))
+            base_backoff = float(os.getenv("BNU_HUB_UPLOAD_BACKOFF", "1.0"))
+            last_exc: Exception | None = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if verbose:
+                        click.echo(f"[DEBUG] upload_file {path_in_repo} (attempt {attempt}/{max_attempts})")
+                    result: dict[str, Any] = {"exc": None}
+
+                    def _target() -> None:
+                        try:
+                            api.upload_file(
+                                path_or_fileobj=path_or_fileobj,
+                                path_in_repo=path_in_repo,
+                                repo_id=repo_id,
+                                repo_type="dataset",
+                            )
+                        except Exception as exc:  # pragma: no cover - network behavior
+                            result["exc"] = exc
+
+                    t = threading.Thread(target=_target, daemon=True)
+                    t.start()
+                    t.join(timeout_s)
+                    if t.is_alive():
+                        raise TimeoutError(f"upload_file timed out after {timeout_s}s")
+                    if result["exc"] is not None:
+                        raise result["exc"]
+                    return
+                except Exception as exc:  # pragma: no cover - network behavior
+                    last_exc = exc
+                    if attempt >= max_attempts:
+                        break
+                    wait_s = base_backoff * (2 ** (attempt - 1))
+                    if verbose:
+                        click.echo(f"[DEBUG] upload_file failed for {path_in_repo}: {exc}. Retrying in {wait_s:.1f}s")
+                    time.sleep(wait_s)
+
+            raise click.ClickException(f"Upload failed for {path_in_repo}: {last_exc}")
+
+        def _upload_folder_with_retry(folder_path: str, path_in_repo: str) -> None:
+            max_attempts = int(os.getenv("BNU_HUB_UPLOAD_ATTEMPTS", "3"))
+            timeout_s = float(os.getenv("BNU_FOLDER_UPLOAD_TIMEOUT", "600"))
+            base_backoff = float(os.getenv("BNU_HUB_UPLOAD_BACKOFF", "1.0"))
+            last_exc: Exception | None = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if verbose:
+                        click.echo(f"[DEBUG] upload_folder {folder_path} -> {path_in_repo or '/'} (attempt {attempt}/{max_attempts})")
+
+                    result: dict[str, Any] = {"exc": None}
+
+                    def _target() -> None:
+                        try:
+                            kwargs: dict[str, Any] = {
+                                "folder_path": folder_path,
+                                "repo_id": repo_id,
+                                "repo_type": "dataset",
+                            }
+                            if path_in_repo:
+                                kwargs["path_in_repo"] = path_in_repo
+                            api.upload_folder(**kwargs)
+                        except Exception as exc:  # pragma: no cover - network behavior
+                            result["exc"] = exc
+
+                    t = threading.Thread(target=_target, daemon=True)
+                    t.start()
+                    t.join(timeout_s)
+                    if t.is_alive():
+                        raise TimeoutError(f"upload_folder timed out after {timeout_s}s")
+                    if result["exc"] is not None:
+                        raise result["exc"]
+                    return
+                except Exception as exc:  # pragma: no cover - network behavior
+                    last_exc = exc
+                    if attempt >= max_attempts:
+                        break
+                    wait_s = base_backoff * (2 ** (attempt - 1))
+                    if verbose:
+                        click.echo(f"[DEBUG] upload_folder failed: {exc}. Retrying in {wait_s:.1f}s")
+                    time.sleep(wait_s)
+
+            raise click.ClickException(f"Folder upload failed: {last_exc}")
+
+        if csv_file:
+            click.echo("Uploading CSV to index/detections.csv...")
+            try:
+                _upload_file_with_retry(str(csv_file), "index/detections.csv")
+                click.echo("CSV uploaded")
+            except Exception as exc:
+                click.echo(f"[WARN] CSV upload failed, continuing without CSV: {exc}")
+
+        click.echo(f"Directly uploading folder '{segments_dir}' to repo path '{remote_base or '/'}'...")
+        start_time = time.time()
+        _upload_folder_with_retry(segments_dir, remote_base)
+        elapsed = int(time.time() - start_time)
+
+        click.echo("\n" + "=" * 60)
+        click.echo("DIRECT FOLDER UPLOAD COMPLETE")
+        click.echo("=" * 60)
+        click.echo(f"Folder:    {segments_dir}")
+        click.echo(f"Target:    {remote_base or '/'}")
+        click.echo(f"Files:     {total_files}")
+        click.echo(f"Size:      {total_size} bytes")
+        click.echo(f"Time:      {elapsed} seconds")
+        click.echo("=" * 60)
+        return
+
+    def _upload_with_retry(path_or_fileobj: Any, path_in_repo: str) -> None:
+        max_attempts = int(os.getenv("BNU_HUB_UPLOAD_ATTEMPTS", "3"))
+        timeout_s = float(os.getenv("BNU_HUB_UPLOAD_TIMEOUT", "90"))
+        base_backoff = float(os.getenv("BNU_HUB_UPLOAD_BACKOFF", "1.0"))
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if verbose:
+                    click.echo(f"[DEBUG] upload_file {path_in_repo} (attempt {attempt}/{max_attempts})")
+                result: dict[str, Any] = {"exc": None}
+
+                def _target() -> None:
+                    try:
+                        api.upload_file(
+                            path_or_fileobj=path_or_fileobj,
+                            path_in_repo=path_in_repo,
+                            repo_id=repo_id,
+                            repo_type="dataset",
+                        )
+                    except Exception as exc:  # pragma: no cover - network behavior
+                        result["exc"] = exc
+
+                t = threading.Thread(target=_target, daemon=True)
+                t.start()
+                t.join(timeout_s)
+                if t.is_alive():
+                    raise TimeoutError(f"upload_file timed out after {timeout_s}s")
+                if result["exc"] is not None:
+                    raise result["exc"]
+                return
+            except Exception as exc:  # pragma: no cover - network behavior
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                wait_s = base_backoff * (2 ** (attempt - 1))
+                if verbose:
+                    click.echo(f"[DEBUG] upload_file failed for {path_in_repo}: {exc}. Retrying in {wait_s:.1f}s")
+                time.sleep(wait_s)
+
+        raise click.ClickException(f"Upload failed for {path_in_repo}: {last_exc}")
+
     repo_service = RepositoryService(hf_token)
     try:
         validation = repo_service.validate_repo(repo_id)
         if not validation.get("is_valid"):
-            click.echo(f"⚠️  Dataset structure incomplete. Attempting to initialize...")
+            click.echo("[WARN] Dataset structure incomplete. Attempting to initialize...")
             try:
                 repo_service.create_dataset(repo_id, private=True)
-                click.echo(f"✅ Dataset structure created successfully!")
+                click.echo("[OK] Dataset structure created successfully!")
             except Exception as exc:
                 raise click.ClickException(
                     f"Could not initialize dataset structure:\n{exc}\n\n"
                     f"Possible causes:\n"
-                    f"• Invalid repo_id format (should be 'username/dataset-name')\n"
-                    f"• No write permission\n"
-                    f"• HuggingFace API error"
+                    f"- Invalid repo_id format (should be 'username/dataset-name')\n"
+                    f"- No write permission\n"
+                    f"- HuggingFace API error"
                 ) from exc
     except Exception as exc:
         error_msg = str(exc)
+        error_msg_lower = error_msg.lower()
+        is_network_issue = (
+            "read timed out" in error_msg_lower
+            or "connection" in error_msg_lower and "timed out" in error_msg_lower
+            or "winerror 10060" in error_msg_lower
+            or "max retries exceeded" in error_msg_lower
+        )
         # Dataset doesn't exist - try to create it
-        if "404" in error_msg or "Repository Not Found" in error_msg:
-            click.echo(f"⚠️  Dataset '{repo_id}' not found. Creating...")
+        if "404" in error_msg or "repository not found" in error_msg_lower or "not found" in error_msg_lower:
+            click.echo(f"[WARN] Dataset '{repo_id}' not found. Creating...")
             try:
                 repo_service.create_dataset(repo_id, private=True)
-                click.echo(f"✅ Dataset created and initialized successfully!")
+                click.echo("[OK] Dataset created and initialized successfully!")
             except Exception as create_exc:
                 raise click.ClickException(
                     f"Dataset not found and could not be created:\n{create_exc}\n\n"
@@ -207,6 +439,9 @@ def upload_cmd(
                     f"1. Verify repo_id format: 'your-username/dataset-name'\n"
                     f"2. Check HuggingFace token has dataset creation permissions"
                 ) from create_exc
+        elif is_network_issue:
+            click.echo(f"[WARN] Repository validation timed out/network issue: {error_msg}")
+            click.echo("[WARN] Continuing upload flow despite validation timeout...")
         else:
             raise click.ClickException(f"Repository validation failed: {error_msg}") from exc
 
@@ -225,11 +460,12 @@ def upload_cmd(
     if csv_file:
         click.echo(f"Uploading CSV to index/detections.csv...")
         try:
-            api.upload_file(path_or_fileobj=str(csv_file), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
+            _upload_with_retry(str(csv_file), "index/detections.csv")
             click.echo("CSV uploaded")
         except Exception as exc:
-            raise click.ClickException(f"CSV upload failed: {exc}") from exc
+            click.echo(f"[WARN] CSV upload failed, continuing without CSV: {exc}")
 
+    manifest_uploaded = False
     try:
         from .manifest import build_manifest_from_scan, manifest_to_bytes
 
@@ -242,22 +478,23 @@ def upload_cmd(
                 csv_rows = list(reader)
 
         manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
-        api.upload_file(path_or_fileobj=manifest_to_bytes(manifest), path_in_repo="index/manifest.json", repo_id=repo_id, repo_type="dataset")
+        _upload_with_retry(manifest_to_bytes(manifest), "index/manifest.json")
+        manifest_uploaded = True
         click.echo("Manifest uploaded: index/manifest.json")
     except Exception as exc:  # pragma: no cover - external API
-        raise click.ClickException(f"Manifest upload failed: {exc}") from exc
+        click.echo(f"[WARN] Manifest upload failed, continuing with audio upload: {exc}")
 
     try:
         from .manifest import write_shards_from_csv_rows
 
-        if csv_file and csv_rows:
+        if csv_file and csv_rows and manifest_uploaded:
             click.echo("Generating index shards from CSV detections...")
             shards = write_shards_from_csv_rows(csv_rows, shard_size=int(__import__("src.uploader.config", fromlist=["INDEX_SHARD_SIZE"]).INDEX_SHARD_SIZE))
             for shard_path in shards:
                 shard_name = shard_path.name
                 click.echo(f"Uploading shard: index/shards/{shard_name}")
                 try:
-                    api.upload_file(path_or_fileobj=str(shard_path), path_in_repo=f"index/shards/{shard_name}", repo_id=repo_id, repo_type="dataset")
+                    _upload_with_retry(str(shard_path), f"index/shards/{shard_name}")
                 except Exception as exc:
                     click.echo(f"Warning: failed to upload shard {shard_name}: {exc}")
             click.echo(f"Uploaded {len(shards)} shards")
@@ -267,7 +504,6 @@ def upload_cmd(
     click.echo("Starting upload of audio files...")
 
     # Track progress with elapsed time
-    import time
     start_time = time.time()
     last_update = start_time
     last_state = {}

@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import requests
 
 from src.uploader_cli.exceptions import RepositoryError
 from src.uploader_cli.repo_service import RepositoryService
@@ -45,6 +46,24 @@ class _FakeApi:
         return list(self.repo_files)
 
 
+class _FakeResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+def _install_request_fakes(monkeypatch: pytest.MonkeyPatch, *, repo_exists: bool, manifest_exists: bool) -> None:
+    def _fake_request(method: str, url: str, timeout=None, headers=None):
+        _ = timeout
+        _ = headers
+        if method == "GET" and "/api/datasets/" in url:
+            return _FakeResponse(200 if repo_exists else 404)
+        if method == "HEAD" and "/resolve/main/index/manifest.json" in url:
+            return _FakeResponse(200 if manifest_exists else 404)
+        raise AssertionError(f"Unexpected request: {method} {url}")
+
+    monkeypatch.setattr("src.uploader_cli.repo_service.requests.request", _fake_request)
+
+
 def test_create_dataset_initializes_expected_structure(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_api = _FakeApi(token="hf_test")
     monkeypatch.setattr("src.uploader_cli.repo_service.HfApi", lambda token: fake_api)
@@ -81,14 +100,8 @@ def test_create_dataset_rejects_invalid_repo_id(monkeypatch: pytest.MonkeyPatch)
 
 def test_validate_repo_returns_valid_for_expected_structure(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_api = _FakeApi(token="hf_test")
-    fake_api.repo_files = [
-        "audio/parrots-2026/.gitkeep",
-        "index/shards/.gitkeep",
-        "validations/.gitkeep",
-        "audit/ingestion-runs/.gitkeep",
-        "index/manifest.json",
-    ]
     monkeypatch.setattr("src.uploader_cli.repo_service.HfApi", lambda token: fake_api)
+    _install_request_fakes(monkeypatch, repo_exists=True, manifest_exists=True)
 
     service = RepositoryService(token="hf_test")
     result = service.validate_repo("alice/parrots-2026")
@@ -101,19 +114,15 @@ def test_validate_repo_returns_valid_for_expected_structure(monkeypatch: pytest.
 
 def test_validate_repo_reports_missing_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_api = _FakeApi(token="hf_test")
-    fake_api.repo_files = [
-        "audio/parrots-2026/.gitkeep",
-        "index/manifest.json",
-    ]
     monkeypatch.setattr("src.uploader_cli.repo_service.HfApi", lambda token: fake_api)
+    _install_request_fakes(monkeypatch, repo_exists=True, manifest_exists=False)
 
     service = RepositoryService(token="hf_test")
     result = service.validate_repo("alice/parrots-2026")
 
-    assert result["is_valid"] is False
-    assert "index/shards/" in result["missing_prefixes"]
-    assert "validations/" in result["missing_prefixes"]
-    assert "audit/ingestion-runs/" in result["missing_prefixes"]
+    assert result["is_valid"] is True
+    assert result["has_manifest"] is False
+    assert result["manifest_error"]
 
 
 def test_validate_repo_rejects_invalid_repo_id(monkeypatch: pytest.MonkeyPatch) -> None:

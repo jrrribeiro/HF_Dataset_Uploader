@@ -1,0 +1,12 @@
+[DEBUG] Verbose logging enabled
+Found 1 audio files (32044 bytes) under .\test_upload_segments
+[DEBUG] Species breakdown: ['speciesA']
+[INFO] birdnet_uploader.repo_service: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3 (attempt 1)
+[INFO] birdnet_uploader.repo_service: GET https://huggingface.co/api/datasets/jrrribeiro/ppbio_teste3 -> 200 in 1.26s
+[INFO] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json (attempt 1)
+[WARNING] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json failed on attempt 1: HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=5)
+[INFO] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json (attempt 2)
+[WARNING] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json failed on attempt 2: HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=5)
+[INFO] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json (attempt 3)
+[WARNING] birdnet_uploader.repo_service: HEAD https://huggingface.co/datasets/jrrribeiro/ppbio_teste3/resolve/main/index/manifest.json failed on attempt 3: HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=5)
+Error: Repository validation failed: HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=5)

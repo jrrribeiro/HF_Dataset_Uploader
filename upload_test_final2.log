@@ -1,0 +1,11 @@
+2026-05-07 17:33:13,907 - INFO - HTTP Request: GET https://api.gradio.app/gradio-messaging/en "HTTP/1.1 200 OK"
+2026-05-07 17:33:19,921 - INFO - Mode detection: cli_mode=False, has_args=True, argv=['C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\birdnet-uploader.exe', 'upload', '--repo-id', 'jrrribeiro/ppbio_teste3', '--segments', '.\\test_upload_segments', '--verbose']
+2026-05-07 17:33:19,921 - INFO - Starting in CLI mode
+[DEBUG] Verbose logging enabled
+Found 1 audio files (32044 bytes) under .\test_upload_segments
+[DEBUG] Species breakdown: ['speciesA']
+Error: Repository validation failed: Could not list dataset files: [WinError 10060] Uma tentativa de conexÒo falhou porque o componente conectado nÒo respondeu
+
+corretamente ap¾s um perÝodo de tempo ou a conexÒo estabelecida falhou
+
+porque o host conectado nÒo respondeu
