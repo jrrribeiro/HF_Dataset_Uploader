@@ -9,6 +9,12 @@ param(
     [switch]$Private,
     [switch]$Public,
     [switch]$DryRun,
+    [switch]$Resume,
+    [switch]$VerifyRemote,
+    [switch]$VerifyEtag,
+    [string]$ProgressLog,
+    [switch]$ResumeOnly,
+    [string]$CheckpointDir,
     [int]$CreateRepoAttempts = 3,
     [int]$UploadAttempts = 3,
     [double]$RetryBackoff = 5
@@ -38,6 +44,12 @@ if ($Csv) { $argsList += @('--csv', $Csv) }
 if ($Private) { $argsList += '--private' }
 if ($Public) { $argsList += '--public' }
 if ($DryRun) { $argsList += '--dry-run' }
+if ($Resume) { $argsList += '--resume' }
+if ($VerifyRemote) { $argsList += '--verify-remote' }
+if ($CheckpointDir) { $argsList += @('--checkpoint-dir', $CheckpointDir) }
+if ($VerifyEtag) { $argsList += '--verify-etag' }
+if ($ProgressLog) { $argsList += @('--progress-log', $ProgressLog) }
+if ($ResumeOnly) { $argsList += '--resume-only' }
 
 $argsList += @('--create-repo-attempts', $CreateRepoAttempts.ToString())
 $argsList += @('--upload-attempts', $UploadAttempts.ToString())

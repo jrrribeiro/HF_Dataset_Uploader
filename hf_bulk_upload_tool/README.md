@@ -13,6 +13,7 @@ This folder contains a standalone script for uploading a large BirdNET segment t
 
 - `upload_dataset.py` - command line uploader
 - `requirements.txt` - minimal dependency list for this folder
+- `run_upload.ps1` - Windows helper launcher
 
 ## Install
 
@@ -69,6 +70,22 @@ python .\hf_bulk_upload_tool\upload_dataset.py `
 The script uploads the segments folder under `audio/` by default, preserving the folder tree inside it. If your local folder is organized by species, that same structure will appear in the dataset.
 
 Optional CSV files are uploaded to `index/detections.csv` by default.
+
+## Large uploads and performance
+
+- The script will use `HfApi.upload_large_folder` when available in your `huggingface_hub` version for optimal throughput.
+- If that API is not available, the script falls back to uploading files in parallel using `--max-workers` (default 4).
+- For very large datasets, increase `--max-workers` and system timeouts via environment variables:
+
+```powershell
+$env:HF_HUB_ETAG_TIMEOUT = '60'
+$env:HF_HUB_DOWNLOAD_TIMEOUT = '300'
+$env:HF_XET_HIGH_PERFORMANCE = '1'
+```
+
+## Resume-only mode
+
+Use `--resume-only` when you want the script to inspect the repository, compare against local files, and write checkpoints/progress logs without uploading anything.
 
 ## Notes for large uploads
 
