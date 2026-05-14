@@ -18,6 +18,11 @@ try:
     import requests
 except Exception:
     requests = None
+try:
+    from tqdm import tqdm
+except Exception:
+    tqdm = None
+import threading
 
 
 def configure_hf_env() -> None:
@@ -290,15 +295,88 @@ def main() -> int:
 
         # If not resuming and hf offers upload_large_folder, use it for speed
         if not args.resume and hasattr(api, "upload_large_folder"):
-            print("Using HfApi.upload_large_folder for optimized large uploads...")
-            api.upload_large_folder(
-                folder_path=str(segments_path),
-                repo_id=repo_id,
-                repo_type="dataset",
-                path_in_repo=args.segments_path_in_repo,
-                commit_message=args.commit_message,
-            )
-            return
+                print("Using HfApi.upload_large_folder for optimized large uploads...")
+
+                # compute total bytes locally for ETA/progress
+                total_bytes = 0
+                for root, _, files in os.walk(segments_path):
+                    for f in files:
+                        try:
+                            total_bytes += (Path(root) / f).stat().st_size
+                        except Exception:
+                            continue
+
+                kwargs = {
+                    "folder_path": str(segments_path),
+                    "repo_id": repo_id,
+                    "repo_type": "dataset",
+                    "path_in_repo": args.segments_path_in_repo,
+                    "commit_message": args.commit_message,
+                    "num_workers": args.max_workers,
+                    "print_report": False,
+                }
+
+                upload_exc: list[Exception] = []
+
+                def get_remote_repo_bytes() -> int | None:
+                    if requests is None:
+                        return None
+                    url = f"https://huggingface.co/api/datasets/{repo_id}"
+                    headers = {"Authorization": f"Bearer {token}"} if token else {}
+                    try:
+                        r = requests.get(url, headers=headers, timeout=20)
+                        r.raise_for_status()
+                        data = r.json()
+                        for key in ("size_in_bytes", "size", "totalBytes", "total_bytes"):
+                            if key in data and isinstance(data[key], int):
+                                return data[key]
+                        for v in data.values():
+                            if isinstance(v, dict):
+                                for key in ("size_in_bytes", "size", "totalBytes"):
+                                    if key in v and isinstance(v[key], int):
+                                        return v[key]
+                    except Exception:
+                        return None
+                    return None
+
+                def _run_upload():
+                    try:
+                        retry_call("upload_large_folder", args.upload_attempts, args.retry_backoff, lambda: api.upload_large_folder(**kwargs))
+                    except Exception as e:
+                        upload_exc.append(e)
+
+                uploader = threading.Thread(target=_run_upload, daemon=True)
+                uploader.start()
+
+                if tqdm is None:
+                    # Fall back to synchronous call if tqdm not installed
+                    uploader.join()
+                    if upload_exc:
+                        raise upload_exc[0]
+                    return
+
+                pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Uploading", leave=True)
+                last_remote = 0
+                poll_interval = 10.0
+                while uploader.is_alive():
+                    remote_bytes = get_remote_repo_bytes()
+                    if remote_bytes is None:
+                        time.sleep(poll_interval)
+                        continue
+                    delta = max(0, remote_bytes - last_remote)
+                    if delta > 0:
+                        pbar.update(delta)
+                        last_remote = remote_bytes
+                    time.sleep(poll_interval)
+
+                final_remote = get_remote_repo_bytes() or last_remote
+                if final_remote > last_remote:
+                    pbar.update(final_remote - last_remote)
+                pbar.close()
+
+                if upload_exc:
+                    raise upload_exc[0]
+                return
 
         # Otherwise, perform per-file upload and skip existing files
         print("Performing per-file upload (skipping already uploaded files if any)...")

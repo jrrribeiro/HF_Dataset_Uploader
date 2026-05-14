@@ -8,7 +8,11 @@ import shutil
 import subprocess
 import tempfile
 import time
+import threading
 from pathlib import Path
+
+import requests
+from tqdm import tqdm
 
 from huggingface_hub import HfApi
 
@@ -120,6 +124,28 @@ def main() -> int:
     allow_patterns = args.allow_patterns
     ignore_patterns = args.ignore_patterns
 
+    def get_remote_repo_bytes(repo_id: str, token: str) -> int | None:
+        # Try dataset metadata endpoint for an uploaded size field. Return bytes or None.
+        url = f"https://huggingface.co/api/datasets/{repo_id}"
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            # Common field names: 'size' (human), 'size_in_bytes' or 'totalBytes'
+            for key in ("size_in_bytes", "size", "totalBytes", "total_bytes"):
+                if key in data and isinstance(data[key], int):
+                    return data[key]
+            # Try nested dicts heuristically
+            for v in data.values():
+                if isinstance(v, dict):
+                    for key in ("size_in_bytes", "size", "totalBytes"):
+                        if key in v and isinstance(v[key], int):
+                            return v[key]
+        except Exception:
+            return None
+        return None
+
     def upload_segments() -> None:
         print("Uploading large folder with upload_large_folder (HF optimized path)...")
         with tempfile.TemporaryDirectory(prefix="birdnet_upload_stage_") as temp_dir:
@@ -131,13 +157,63 @@ def main() -> int:
                 "repo_type": "dataset",
                 "private": is_private,
                 "num_workers": args.max_workers,
-                "print_report": True,
+                # turn off HF internal per-file prints to avoid flooding and extra API calls
+                "print_report": False,
             }
             if allow_patterns:
                 kwargs["allow_patterns"] = allow_patterns
             if ignore_patterns:
                 kwargs["ignore_patterns"] = ignore_patterns
-            api.upload_large_folder(**kwargs)
+
+            # compute local total bytes for ETA/progress estimation
+            total_bytes = 0
+            for root, _, files in os.walk(segments_path):
+                for f in files:
+                    try:
+                        total_bytes += (Path(root) / f).stat().st_size
+                    except Exception:
+                        continue
+
+            # Start upload in background thread and poll remote repo info periodically
+            upload_exc: list[Exception] = []
+
+            def _run_upload():
+                try:
+                    # Use a retry wrapper to handle transient errors and 429s with backoff
+                    retry("upload_large_folder", 5, 15.0, lambda: api.upload_large_folder(**kwargs))
+                except Exception as e:  # noqa: BLE001
+                    upload_exc.append(e)
+
+            uploader = threading.Thread(target=_run_upload, daemon=True)
+            uploader.start()
+
+            # progress bar based on remote repo bytes with fallback to elapsed-throughput
+            pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Uploading", leave=True)
+            last_remote = 0
+            start_time = time.time()
+            poll_interval = 10.0
+            # reduce frequency to avoid HF rate limits
+            while uploader.is_alive():
+                remote_bytes = get_remote_repo_bytes(args.repo_id, token)
+                if remote_bytes is None:
+                    # can't estimate until we get some remote progress; sleep and continue
+                    time.sleep(poll_interval)
+                    continue
+                delta = max(0, remote_bytes - last_remote)
+                if delta > 0:
+                    pbar.update(delta)
+                    last_remote = remote_bytes
+                time.sleep(poll_interval)
+
+            # final poll after thread finished
+            final_remote = get_remote_repo_bytes(args.repo_id, token) or last_remote
+            if final_remote > last_remote:
+                pbar.update(final_remote - last_remote)
+            pbar.close()
+
+            if upload_exc:
+                # raise captured upload exception with context
+                raise upload_exc[0]
 
     retry("upload_segments", 3, 5.0, upload_segments)
 
