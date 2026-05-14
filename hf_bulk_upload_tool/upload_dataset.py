@@ -435,27 +435,27 @@ def main() -> int:
             else:
                 elapsed = time.time() - start
                 append_progress(local_path, repo_path, 'uploaded', None, elapsed)
-                    # update aggregated progress bar
-                    if pbar is not None:
-                        size = 0
-                        try:
-                            size = local_path.stat().st_size
-                        except Exception:
-                            size = 0
-                        try:
-                            if pbar_lock:
-                                with pbar_lock:
-                                    pbar.update(size)
-                            else:
-                                pbar.update(size)
-                        except Exception:
-                            pass
-                    # throttle to reduce HF rate pressure
+                # update aggregated progress bar
+                if pbar is not None:
+                    size = 0
                     try:
-                        time.sleep(args.per_file_delay)
+                        size = local_path.stat().st_size
+                    except Exception:
+                        size = 0
+                    try:
+                        if pbar_lock:
+                            with pbar_lock:
+                                pbar.update(size)
+                        else:
+                            pbar.update(size)
                     except Exception:
                         pass
-                    return repo_path, local_path
+                # throttle to reduce HF rate pressure
+                try:
+                    time.sleep(args.per_file_delay)
+                except Exception:
+                    pass
+                return repo_path, local_path
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as ex:
             futures = [ex.submit(upload_one, f) for f in files]
