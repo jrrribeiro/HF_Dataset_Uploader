@@ -57,7 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--create-repo-attempts", type=int, default=3, help="Number of retries for repo creation.")
     parser.add_argument("--upload-attempts", type=int, default=3, help="Number of retries for folder and CSV uploads.")
     parser.add_argument("--retry-backoff", type=float, default=5.0, help="Base delay in seconds between retries.")
-    parser.add_argument("--max-workers", type=int, default=4, help="Number of parallel worker threads for per-file uploads (fallback path).")
+    parser.add_argument("--max-workers", type=int, default=1, help="Number of parallel worker threads for per-file uploads (fallback path).")
+    parser.add_argument("--per-file-delay", type=float, default=0.5, help="Seconds to wait between per-file uploads to avoid rate limits.")
     parser.add_argument("--resume", action="store_true", help="Check repository and skip files that are already uploaded (resume mode).")
     parser.add_argument("--checkpoint-dir", default=None, help="Directory to store upload checkpoints. Defaults to ./hf_bulk_upload_tool/.checkpoints.")
     parser.add_argument("--verify-remote", action="store_true", help="When resuming, verify remote file size via HTTP HEAD to avoid skipping mismatched files.")
@@ -102,7 +103,26 @@ def retry_call(label: str, attempts: int, backoff: float, func):
             last_error = exc
             if attempt >= attempts:
                 break
+            # Detect possible 429 / rate-limit signals and increase backoff
             wait_seconds = backoff * attempt
+            try:
+                resp = getattr(exc, 'response', None)
+                if resp is not None:
+                    status = getattr(resp, 'status_code', None)
+                    if status == 429:
+                        # obey Retry-After header when present
+                        ra = resp.headers.get('Retry-After') if hasattr(resp, 'headers') else None
+                        if ra:
+                            try:
+                                wait_seconds = max(wait_seconds, int(ra))
+                            except Exception:
+                                wait_seconds = max(wait_seconds, backoff * attempt * 4)
+                        else:
+                            wait_seconds = max(wait_seconds, backoff * attempt * 4)
+                elif '429' in str(exc) or 'Too Many Requests' in str(exc):
+                    wait_seconds = max(wait_seconds, backoff * attempt * 4)
+            except Exception:
+                pass
             print(f"[{label}] attempt {attempt} failed: {exc}")
             print(f"[{label}] retrying in {wait_seconds:.0f}s")
             time.sleep(wait_seconds)
@@ -295,87 +315,45 @@ def main() -> int:
 
         # If not resuming and hf offers upload_large_folder, use it for speed
         if not args.resume and hasattr(api, "upload_large_folder"):
-                print("Using HfApi.upload_large_folder for optimized large uploads...")
+            print("Attempting HfApi.upload_large_folder for optimized large uploads (will fall back on failure)...")
 
-                # compute total bytes locally for ETA/progress
-                total_bytes = 0
-                for root, _, files in os.walk(segments_path):
-                    for f in files:
-                        try:
-                            total_bytes += (Path(root) / f).stat().st_size
-                        except Exception:
-                            continue
-
-                kwargs = {
-                    "folder_path": str(segments_path),
-                    "repo_id": repo_id,
-                    "repo_type": "dataset",
-                    "path_in_repo": args.segments_path_in_repo,
-                    "commit_message": args.commit_message,
-                    "num_workers": args.max_workers,
-                    "print_report": False,
-                }
-
-                upload_exc: list[Exception] = []
-
-                def get_remote_repo_bytes() -> int | None:
-                    if requests is None:
-                        return None
-                    url = f"https://huggingface.co/api/datasets/{repo_id}"
-                    headers = {"Authorization": f"Bearer {token}"} if token else {}
+            # compute total bytes locally for ETA/progress
+            total_bytes = 0
+            for root, _, files in os.walk(segments_path):
+                for f in files:
                     try:
-                        r = requests.get(url, headers=headers, timeout=20)
-                        r.raise_for_status()
-                        data = r.json()
-                        for key in ("size_in_bytes", "size", "totalBytes", "total_bytes"):
-                            if key in data and isinstance(data[key], int):
-                                return data[key]
-                        for v in data.values():
-                            if isinstance(v, dict):
-                                for key in ("size_in_bytes", "size", "totalBytes"):
-                                    if key in v and isinstance(v[key], int):
-                                        return v[key]
+                        total_bytes += (Path(root) / f).stat().st_size
                     except Exception:
-                        return None
-                    return None
-
-                def _run_upload():
-                    try:
-                        retry_call("upload_large_folder", args.upload_attempts, args.retry_backoff, lambda: api.upload_large_folder(**kwargs))
-                    except Exception as e:
-                        upload_exc.append(e)
-
-                uploader = threading.Thread(target=_run_upload, daemon=True)
-                uploader.start()
-
-                if tqdm is None:
-                    # Fall back to synchronous call if tqdm not installed
-                    uploader.join()
-                    if upload_exc:
-                        raise upload_exc[0]
-                    return
-
-                pbar = tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Uploading", leave=True)
-                last_remote = 0
-                poll_interval = 10.0
-                while uploader.is_alive():
-                    remote_bytes = get_remote_repo_bytes()
-                    if remote_bytes is None:
-                        time.sleep(poll_interval)
                         continue
-                    delta = max(0, remote_bytes - last_remote)
-                    if delta > 0:
-                        pbar.update(delta)
-                        last_remote = remote_bytes
-                    time.sleep(poll_interval)
 
-                final_remote = get_remote_repo_bytes() or last_remote
-                if final_remote > last_remote:
-                    pbar.update(final_remote - last_remote)
-                pbar.close()
+            kwargs = {
+                "folder_path": str(segments_path),
+                "repo_id": repo_id,
+                "repo_type": "dataset",
+                "path_in_repo": args.segments_path_in_repo,
+                "commit_message": args.commit_message,
+                "num_workers": args.max_workers,
+                "print_report": False,
+            }
 
-                if upload_exc:
-                    raise upload_exc[0]
+            upload_exc: list[Exception] = []
+
+            def _run_upload():
+                try:
+                    retry_call("upload_large_folder", args.upload_attempts, args.retry_backoff, lambda: api.upload_large_folder(**kwargs))
+                except Exception as e:
+                    upload_exc.append(e)
+
+            uploader = threading.Thread(target=_run_upload, daemon=True)
+            uploader.start()
+
+            # wait for upload to finish but do not immediately fail on error; fallback to per-file
+            uploader.join()
+            if upload_exc:
+                print(f"upload_large_folder failed: {upload_exc[0]}; falling back to per-file upload with throttling.")
+                # continue to per-file upload path below
+            else:
+                print("upload_large_folder completed successfully.")
                 return
 
         # Otherwise, perform per-file upload and skip existing files
@@ -425,6 +403,17 @@ def main() -> int:
 
         print(f"Found {len(files)} files to upload; launching {args.max_workers} workers")
 
+        # aggregated progress bar for per-file uploads
+        pbar = None
+        pbar_lock = None
+        if tqdm is not None:
+            try:
+                pbar = tqdm(total=run_stats['bytes_planned'], unit="B", unit_scale=True, desc="Uploading", leave=True)
+                import threading as _threading
+                pbar_lock = _threading.Lock()
+            except Exception:
+                pbar = None
+
         def upload_one(pair: Tuple[Path, str]):
             local_path, repo_path = pair
             start = time.time()
@@ -446,7 +435,27 @@ def main() -> int:
             else:
                 elapsed = time.time() - start
                 append_progress(local_path, repo_path, 'uploaded', None, elapsed)
-                return repo_path, local_path
+                    # update aggregated progress bar
+                    if pbar is not None:
+                        size = 0
+                        try:
+                            size = local_path.stat().st_size
+                        except Exception:
+                            size = 0
+                        try:
+                            if pbar_lock:
+                                with pbar_lock:
+                                    pbar.update(size)
+                            else:
+                                pbar.update(size)
+                        except Exception:
+                            pass
+                    # throttle to reduce HF rate pressure
+                    try:
+                        time.sleep(args.per_file_delay)
+                    except Exception:
+                        pass
+                    return repo_path, local_path
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as ex:
             futures = [ex.submit(upload_one, f) for f in files]
@@ -469,6 +478,11 @@ def main() -> int:
                     except Exception:
                         pass
                     save_checkpoint(already_uploaded, checkpoint_hashes)
+        if pbar is not None:
+            try:
+                pbar.close()
+            except Exception:
+                pass
 
     retry_call("upload_segments", args.upload_attempts, args.retry_backoff, upload_segments)
 

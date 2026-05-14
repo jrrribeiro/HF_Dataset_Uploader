@@ -61,7 +61,25 @@ def retry(label: str, attempts: int, backoff_seconds: float, func):
             last_error = exc
             if attempt >= attempts:
                 break
+            # Increase backoff if we detect rate limiting (429)
             wait_seconds = backoff_seconds * attempt
+            try:
+                resp = getattr(exc, 'response', None)
+                if resp is not None:
+                    status = getattr(resp, 'status_code', None)
+                    if status == 429:
+                        ra = resp.headers.get('Retry-After') if hasattr(resp, 'headers') else None
+                        if ra:
+                            try:
+                                wait_seconds = max(wait_seconds, int(ra))
+                            except Exception:
+                                wait_seconds = max(wait_seconds, backoff_seconds * attempt * 4)
+                        else:
+                            wait_seconds = max(wait_seconds, backoff_seconds * attempt * 4)
+                elif '429' in str(exc) or 'Too Many Requests' in str(exc):
+                    wait_seconds = max(wait_seconds, backoff_seconds * attempt * 4)
+            except Exception:
+                pass
             print(f"[{label}] failed: {exc}")
             print(f"[{label}] retrying in {wait_seconds:.0f}s")
             time.sleep(wait_seconds)
