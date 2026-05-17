@@ -1,6 +1,0 @@
-[DEBUG] Verbose logging enabled
-Found 1 audio files (32044 bytes) under .\test_upload_segments
-[DEBUG] Species breakdown: ['speciesA']
-No files have been modified since last commit. Skipping to prevent empty commit.
-Manifest uploaded: index/manifest.json
-Starting upload of audio files...

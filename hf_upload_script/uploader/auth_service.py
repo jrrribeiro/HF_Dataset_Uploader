@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import keyring
+
+from .config import KEYRING_ACCOUNT, KEYRING_SERVICE, TOKEN_ENV_VAR
+from .exceptions import AuthenticationError
+
+
+class AuthService:
+    """Authenticate and securely store Hugging Face tokens.
+
+    Token resolution order (highest to lowest priority):
+    1. HF_TOKEN environment variable (useful for container/CI)
+    2. keyring (OS-specific secure storage)
+    3. Manual --token CLI option
+    """
+
+    KEYRING_SERVICE = KEYRING_SERVICE
+    KEYRING_ACCOUNT = KEYRING_ACCOUNT
+
+    def authenticate(self, token: str) -> dict[str, Any]:
+        token = token.strip()
+        if not token:
+            raise AuthenticationError("Token is required")
+
+        try:
+            # Import HfApi lazily so caller can configure HF-related monkeypatches/timeouts first
+            from huggingface_hub import HfApi
+
+            api = HfApi(token=token)
+            whoami = api.whoami()
+        except Exception as exc:  # pragma: no cover - external API behavior
+            raise AuthenticationError(f"Token validation failed: {exc}") from exc
+
+        try:
+            keyring.set_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT, token)
+        except Exception as exc:  # pragma: no cover - backend-specific behavior
+            raise AuthenticationError(f"Token validated, but could not be saved securely: {exc}") from exc
+
+        return {
+            "username": whoami.get("name") or "unknown",
+            "email": whoami.get("email", ""),
+            "user_id": whoami.get("id") or whoami.get("user_id", ""),
+        }
+
+    def get_token(self) -> str | None:
+        """Retrieve token from environment or secure storage.
+
+        Priority: HF_TOKEN env var > keyring storage.
+        """
+        env_token = os.getenv(TOKEN_ENV_VAR)
+        if env_token:
+            return env_token.strip()
+
+        try:
+            return keyring.get_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT)
+        except Exception as exc:  # pragma: no cover - backend-specific behavior
+            raise AuthenticationError(f"Could not read stored token: {exc}") from exc
+
+    def require_token(self) -> str:
+        token = self.get_token()
+        if not token:
+            raise AuthenticationError("No stored token found. Run 'birdnet-uploader login' first.")
+        return token
+
+    def clear_token(self) -> None:
+        try:
+            keyring.delete_password(self.KEYRING_SERVICE, self.KEYRING_ACCOUNT)
+        except keyring.errors.PasswordDeleteError:
+            return
+        except Exception as exc:  # pragma: no cover - backend-specific behavior
+            raise AuthenticationError(f"Could not clear stored token: {exc}") from exc
+        else:
+            return

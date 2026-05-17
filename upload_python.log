@@ -1,7 +1,0 @@
-[DEBUG] Verbose logging enabled
-Found 1 audio files (32044 bytes) under .\test_upload_segments
-[DEBUG] Species breakdown: ['speciesA']
-[WARN] Dataset 'jrrribeiro/ppbio_teste3' not found. Creating...
-Ô£à Dataset created and initialized successfully!
-Manifest uploaded: index/manifest.json
-Starting upload of audio files...

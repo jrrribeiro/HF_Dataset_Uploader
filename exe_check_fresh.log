@@ -1,8 +1,0 @@
-2026-05-07 16:24:59,996 - INFO - HTTP Request: GET https://api.gradio.app/gradio-messaging/en "HTTP/1.1 200 OK"
-2026-05-07 16:25:07,336 - INFO - Mode detection: cli_mode=False, has_args=False, argv=['C:\\Users\\jonat\\Documents\\Python\\BirdNET-Uploader-App\\dist\\birdnet-uploader\\birdnet-uploader.exe']
-2026-05-07 16:25:07,337 - INFO - Starting in Web UI mode
-2026-05-07 16:25:07,594 - INFO - Launching Gradio app on 0.0.0.0:7860
-2026-05-07 16:25:08,432 - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
-2026-05-07 16:25:10,201 - INFO - HTTP Request: GET http://localhost:7860/gradio_api/startup-events "HTTP/1.1 200 OK"
-2026-05-07 16:25:12,293 - INFO - HTTP Request: HEAD http://localhost:7860/ "HTTP/1.1 200 OK"
-2026-05-07 16:25:12,517 - INFO - HTTP Request: HEAD https://huggingface.co/api/telemetry/gradio/launched "HTTP/1.1 200 OK"
