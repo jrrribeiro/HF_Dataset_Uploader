@@ -88,7 +88,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
         return "Error: token and repo_id are required." , None
 
     # Store uploaded files to a temp directory
-    tmpdir = Path(tempfile.mkdtemp(prefix="birdnet-upload-"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="hf-dataset-uploader-upload-"))
     try:
         progress(0, desc="Initializing upload...")
         _store_uploaded_files(files or [], tmpdir)
@@ -127,7 +127,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
             return (
                 f"Upload exceeds 1 GB limit ({size_gb:.2f} GB). "
                 "Please download the Windows standalone uploader for large archives: "
-                "https://github.com/jrrribeiro/BirdNET-Uploader-App/releases/latest/download/birdnet-uploader-windows.zip",
+                "https://github.com/jrrribeiro/HF_Dataset_Uploader/releases/latest",
                 None
             )
 
@@ -286,12 +286,12 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
 
 
 def create_uploader_app():
-    with gr.Blocks(title="BirdNET Uploader") as app:
+    with gr.Blocks(title="HF Dataset Uploader") as app:
         gr.Markdown("""
-        # 🐦 BirdNET Uploader
+        # HF Dataset Uploader
         Upload audio segments (multiple files) and optional CSV of detections to a Hugging Face dataset.
 
-        If you need to upload many files, download the Windows container and run the standalone uploader locally for best performance.
+        If you need to upload many files, download the Windows portable build and run the standalone uploader locally for best performance.
         """)
 
         with gr.Group("Authentication"):
@@ -322,13 +322,13 @@ def create_uploader_app():
 
 Para uploads maiores (>1 GB) ou melhor performance, baixe o executavel portatil:
 
-**[Download birdnet-uploader-1.0.4-windows.zip](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip)**
+**[Download hf-dataset-uploader-windows.zip](https://github.com/jrrribeiro/HF_Dataset_Uploader/releases/latest)**
 
 - **Tamanho**: ~109 MB (sem Python necessario)
 - **Performance**: Upload ilimitado via CLI
-- **Seguranca**: Checksum disponivel [aqui](https://huggingface.co/datasets/jrrribeiro/birdnet-uploader-releases/resolve/main/releases/v1.0.4/birdnet-uploader-1.0.4-windows.zip.sha256)
-- **Instrucoes**: [Setup Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/WINDOWS_PORTABLE_SETUP.md)
-- **Troubleshooting**: [Guide](https://github.com/jrrribeiro/BirdNET-Uploader-App/blob/main/TROUBLESHOOTING.md)
+- **Seguranca**: Checksum disponivel na pagina do release acima
+- **Instrucoes**: [README principal](https://github.com/jrrribeiro/HF_Dataset_Uploader/blob/main/README.md)
+- **Troubleshooting**: [README principal](https://github.com/jrrribeiro/HF_Dataset_Uploader/blob/main/README.md)
 
 ### [INFO] Checksum SHA256
 ```

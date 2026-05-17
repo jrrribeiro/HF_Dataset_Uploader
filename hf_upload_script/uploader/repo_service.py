@@ -13,7 +13,7 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
 from .config import INDEX_SHARD_SIZE, SCHEMA_VERSION, RETRY_MAX_ATTEMPTS, RETRY_INITIAL_BACKOFF_SECONDS
 
-logger = logging.getLogger("birdnet_uploader.repo_service")
+logger = logging.getLogger("hf_dataset_uploader.repo_service")
 from .exceptions import RepositoryError
 
 

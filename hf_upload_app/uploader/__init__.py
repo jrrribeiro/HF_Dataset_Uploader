@@ -1,4 +1,4 @@
-"""BirdNET Uploader package (refactored from uploader_cli)."""
+"""HF Dataset Uploader package (refactored from uploader_cli)."""
 
 __all__ = [
     "auth_service",

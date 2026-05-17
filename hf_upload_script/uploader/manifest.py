@@ -64,7 +64,7 @@ def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: in
         return []
 
     out_paths: List[Path] = []
-    tmpdir = Path(tempfile.mkdtemp(prefix="birdnet-shards-"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="hf-dataset-uploader-shards-"))
 
     try:
         for i in range(0, len(rows_list), shard_size):

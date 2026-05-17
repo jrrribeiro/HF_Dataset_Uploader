@@ -5,14 +5,14 @@ from textual.containers import Container
 from textual.widgets import Button, Static
 
 
-class BirdNetUploaderTui(App[None]):
+class HfDatasetUploaderTui(App[None]):
     """Minimal shell used during sprint scaffolding."""
 
-    TITLE = "BirdNET Uploader"
+    TITLE = "HF Dataset Uploader"
 
     def compose(self) -> ComposeResult:
         yield Container(
-            Static("BirdNET Uploader\nLogin -> Repo -> Upload", id="title"),
+            Static("HF Dataset Uploader\nLogin -> Repo -> Upload", id="title"),
             Button("Exit", id="exit"),
             id="main",
         )

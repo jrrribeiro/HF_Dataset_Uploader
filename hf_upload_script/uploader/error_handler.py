@@ -11,9 +11,9 @@ from .exceptions import (
 
 
 ERROR_HINTS: dict[type[UploaderCliError], str] = {
-    AuthenticationError: "Run 'birdnet-uploader login' and verify your Hugging Face token.",
+    AuthenticationError: "Run 'hf-dataset-uploader login' and verify your Hugging Face token.",
     RepositoryError: "Check repository id format (owner/name) and write permissions on Hugging Face.",
-    SessionError: "Verify session id and local checkpoint files under .birdnet-uploader/sessions.",
+    SessionError: "Verify session id and local checkpoint files under .hf-dataset-uploader/sessions.",
     ValidationError: "Fix invalid paths or inputs and retry the command.",
     UploadError: "Check your network and run the command again to resume from checkpoint.",
 }

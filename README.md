@@ -14,11 +14,12 @@ Este repositorio foi desenhado para um fluxo cientifico de curadoria: os segment
 - [6. Como Usar - CLI (Script)](#6-como-usar---cli-script)
 - [7. Como Usar - GUI (App)](#7-como-usar---gui-app)
 - [8. Como Gerar e Usar o EXE](#8-como-gerar-e-usar-o-exe)
-- [9. Variaveis de Ambiente](#9-variaveis-de-ambiente)
-- [10. Fluxo Recomendado de Operacao](#10-fluxo-recomendado-de-operacao)
-- [11. Estrutura de Pastas](#11-estrutura-de-pastas)
-- [12. Qualidade, Limites e Boas Praticas](#12-qualidade-limites-e-boas-praticas)
-- [13. Documentacao Complementar](#13-documentacao-complementar)
+- [9. Pasta Temp](#9-pasta-temp)
+- [10. Variaveis de Ambiente](#10-variaveis-de-ambiente)
+- [11. Fluxo Recomendado de Operacao](#11-fluxo-recomendado-de-operacao)
+- [12. Estrutura de Pastas](#12-estrutura-de-pastas)
+- [13. Qualidade, Limites e Boas Praticas](#13-qualidade-limites-e-boas-praticas)
+- [14. Documentacao Complementar](#14-documentacao-complementar)
 
 ## 1. Escopo Cientifico
 
@@ -176,7 +177,11 @@ Uso do EXE:
 2. executar binario;
 3. operar via mesma interface GUI.
 
-## 9. Variaveis de Ambiente
+## 9. Pasta Temp
+Use `Temp/` na raiz para arquivos temporarios gerais.
+Cada subprojeto tambem possui sua propria pasta `Temp/`.
+
+## 10. Variaveis de Ambiente
 
 Variaveis suportadas pelo codigo atual:
 
@@ -198,7 +203,7 @@ Tunings de rede/upload:
 - `BNU_HUB_UPLOAD_BACKOFF`
 - `BNU_FOLDER_UPLOAD_TIMEOUT`
 
-## 10. Fluxo Recomendado de Operacao
+## 11. Fluxo Recomendado de Operacao
 
 1. gerar segmentos e deteccoes no pipeline BirdNET;
 2. revisar estrutura local de arquivos;
@@ -207,7 +212,7 @@ Tunings de rede/upload:
 5. validar dataset remoto;
 6. encaminhar dataset para etapa de validacao colaborativa.
 
-## 11. Estrutura de Pastas
+## 12. Estrutura de Pastas
 
 ```text
 HF_Dataset_Uploader/
@@ -217,7 +222,7 @@ HF_Dataset_Uploader/
 └─ README.md
 ```
 
-## 12. Qualidade, Limites e Boas Praticas
+## 13. Qualidade, Limites e Boas Praticas
 
 - prefira nomes de arquivo estaveis e consistentes;
 - valide encoding e delimitadores do CSV antes do upload;
@@ -225,7 +230,7 @@ HF_Dataset_Uploader/
 - use sessao resumivel para robustez operacional;
 - mantenha token fora de logs e scripts versionados.
 
-## 13. Documentacao Complementar
+## 14. Documentacao Complementar
 
 - `hf_upload_script/README.md`: operacao detalhada do CLI.
 - `hf_upload_app/README.md`: operacao GUI e empacotamento.
