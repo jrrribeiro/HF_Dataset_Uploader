@@ -668,22 +668,23 @@ def main() -> int:
                     except Exception as e:
                         # Error already logged above, just continue
                         continue
+
+                    # mark as uploaded in checkpoint
+                    if repo_path:
+                        already_uploaded.add(repo_path)
+                        try:
+                            checkpoint_hashes[repo_path] = compute_sha256(local_path)
+                        except Exception as e:
+                            print(f"Warning: failed to hash {repo_path} after upload: {e}")
+                        run_stats['uploaded'] += 1
+                        try:
+                            run_stats['bytes_uploaded'] += Path(local_path).stat().st_size
+                        except Exception:
+                            pass
+                        save_checkpoint(already_uploaded, checkpoint_hashes)
         finally:
             file_pbar.close()
             file_pbar.log_errors()
-                # mark as uploaded in checkpoint
-                if repo_path:
-                    already_uploaded.add(repo_path)
-                    try:
-                        checkpoint_hashes[repo_path] = compute_sha256(local_path)
-                    except Exception as e:
-                        print(f"Warning: failed to hash {repo_path} after upload: {e}")
-                    run_stats['uploaded'] += 1
-                    try:
-                        run_stats['bytes_uploaded'] += Path(local_path).stat().st_size
-                    except Exception:
-                        pass
-                    save_checkpoint(already_uploaded, checkpoint_hashes)
         if pbar is not None:
             try:
                 pbar.close()
