@@ -10,3 +10,13 @@ dist/
 build/release/
 build/pyinstaller_uploader/
 app.zip
+# Generated staging and temporary audio artifacts
+hf_bulk_upload_tool/.checkpoints/
+tmp_segments_direct/
+tmp_segments_direct_2/
+test_upload_segments/
+# Ignore build artifacts and PyInstaller outputs
+build/
+hf_bulk_upload_tool/build/
+*.pkg
+*.pyz

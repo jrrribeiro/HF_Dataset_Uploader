@@ -5,8 +5,11 @@ import argparse
 import getpass
 import hashlib
 import os
+import shutil
 import sys
+import subprocess
 import time
+import contextlib
 from pathlib import Path
 import concurrent.futures
 from typing import List, Tuple
@@ -24,6 +27,14 @@ except Exception:
     tqdm = None
 import threading
 
+try:
+    from sharding_utils import should_shard_directory, shard_directory
+    from progress_bar_utils import ProgressFilter, FilesProgressBar
+except ImportError:
+    # Fallback for relative imports during development
+    from .sharding_utils import should_shard_directory, shard_directory
+    from .progress_bar_utils import ProgressFilter, FilesProgressBar
+
 
 def configure_hf_env() -> None:
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "20")
@@ -34,6 +45,152 @@ def configure_hf_env() -> None:
 configure_hf_env()
 
 from huggingface_hub import HfApi
+
+
+class RateLimiter:
+    """Sliding window rate limiter for HF API (1000 requests per 5 minutes)."""
+    def __init__(self, max_requests: int = 1000, window_seconds: int = 300):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.request_times: list[tuple[float, str]] = []
+    
+    def acquire(self, request_type: str = "upload") -> None:
+        """Wait if necessary to stay within rate limits, then register the request."""
+        now = time.time()
+        
+        # Remove requests outside the current window
+        self.request_times = [
+            (ts, req_type) for ts, req_type in self.request_times
+            if now - ts < self.window_seconds
+        ]
+        
+        # If at limit, wait until oldest request drops out of window
+        if len(self.request_times) >= self.max_requests:
+            oldest_ts = self.request_times[0][0]
+            wait_time = (oldest_ts + self.window_seconds) - now
+            if wait_time > 0:
+                print(f"[RateLimit] Reached {self.max_requests} requests in {self.window_seconds}s window.")
+                print(f"[RateLimit] Waiting {wait_time:.0f}s before next request...")
+                time.sleep(wait_time)
+                self.request_times = []  # Reset window
+        
+        # Register this request
+        self.request_times.append((now, request_type))
+    
+    def get_window_usage(self) -> tuple[int, int]:
+        """Return (requests_in_window, max_requests)."""
+        now = time.time()
+        self.request_times = [
+            (ts, req_type) for ts, req_type in self.request_times
+            if now - ts < self.window_seconds
+        ]
+        return len(self.request_times), self.max_requests
+
+
+def ensure_directory_link(link_path: Path, target_path: Path) -> None:
+    """Create a directory link on the local filesystem.
+
+    On Windows, prefer a junction so the uploader can stage the repo structure
+    without copying the full audio tree.
+    """
+    if link_path.exists() or link_path.is_symlink():
+        try:
+            if link_path.resolve() == target_path.resolve():
+                return
+        except Exception:
+            pass
+        if link_path.is_symlink() or link_path.is_file():
+            link_path.unlink()
+        else:
+            shutil.rmtree(link_path)
+
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return
+        except Exception:
+            pass
+
+    os.symlink(target_path, link_path, target_is_directory=True)
+
+
+def prepare_staging_folder(staging_root: Path, segments_path: Path, csv_path: Path | None) -> Path:
+    """Build a persistent staging tree with the repo layout expected by HF.
+
+    The stage keeps the audio directory as a link to the real data and copies
+    only small metadata files locally.
+    """
+    staging_root.mkdir(parents=True, exist_ok=True)
+
+    audio_link = staging_root / "audio"
+    ensure_directory_link(audio_link, segments_path)
+
+    if csv_path is not None:
+        csv_dest = staging_root / "index" / "detections.csv"
+        csv_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(csv_path, csv_dest)
+
+    return staging_root
+
+
+def _prepare_sharded_staging(staging_root: Path, segments_path: Path, csv_path: Path | None) -> Path:
+    """Prepare staging folder with automatic sharding for large species directories.
+    
+    Detects species folders with >9500 files and automatically shards them into
+    numbered subdirectories to comply with HF's 10k files per directory limit.
+    Validation tools can transparently read shards via sharding_utils.
+    
+    Returns:
+        Path to the prepared staging root directory
+    """
+    staging_root.mkdir(parents=True, exist_ok=True)
+    audio_staging = staging_root / "audio"
+    audio_staging.mkdir(parents=True, exist_ok=True)
+    
+    sharded_species = []
+    
+    # Check each species folder for sharding
+    for species_dir in sorted(segments_path.iterdir()):
+        if not species_dir.is_dir():
+            continue
+        
+        if should_shard_directory(species_dir):
+            # Need to shard this species
+            print(f"[Sharding] {species_dir.name} exceeds 9500 files, dividing into shards...")
+            try:
+                shards = shard_directory(species_dir, audio_staging)
+                sharded_species.append((species_dir.name, len(shards)))
+                print(f"[Sharding] Created {len(shards)} shards for {species_dir.name}")
+            except Exception as e:
+                print(f"[Sharding] ERROR sharding {species_dir.name}: {e}")
+                print(f"[Sharding] Falling back to single directory link")
+                ensure_directory_link(audio_staging / species_dir.name, species_dir)
+        else:
+            # Small species, just link it
+            ensure_directory_link(audio_staging / species_dir.name, species_dir)
+    
+    # Log sharding summary
+    if sharded_species:
+        print(f"\n[Sharding] Summary: {len(sharded_species)} species were divided")
+        for species_name, num_shards in sharded_species:
+            print(f"  - {species_name}: {num_shards} shards")
+        print("[Sharding] Note: Validation tools will transparently read all shards as single species\n")
+    
+    # Copy CSV if provided
+    if csv_path is not None:
+        csv_dest = staging_root / "index" / "detections.csv"
+        csv_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(csv_path, csv_dest)
+    
+    return staging_root
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +223,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-log", default=None, help="Path to CSV progress log. Defaults to <checkpoint-dir>/progress.csv")
     parser.add_argument("--resume-only", action="store_true", help="Only compare local files with the repo and report what would be uploaded; do not upload anything.")
     parser.add_argument("--dry-run", action="store_true", help="Print the planned actions without uploading anything.")
+    parser.add_argument("--rate-limit-aware", action="store_true", default=True, help="Enable rate limiter to respect HF 1000 req/5min quota (default: True).")
+    parser.add_argument("--rate-limit-max-requests", type=int, default=950, help="Max requests per window before waiting (default: 950 for safety buffer).")
+    parser.add_argument("--rate-limit-window", type=int, default=300, help="Rate limit window in seconds (default: 300 = 5min).")
     return parser.parse_args()
 
 
@@ -153,7 +313,10 @@ def main() -> int:
     print(f"Repository: {repo_id}")
     print(f"Segments: {segments_path}")
     print(f"Segments destination: {args.segments_path_in_repo}")
-    if csv_path:
+    # Track if CSV was uploaded as part of the staged large-folder upload
+    csv_uploaded_with_segments = False
+
+    if csv_path and not csv_uploaded_with_segments:
         print(f"CSV: {csv_path}")
         print(f"CSV destination: {args.csv_path_in_repo}")
     print(f"Visibility: {'private' if is_private else 'public'}")
@@ -164,9 +327,18 @@ def main() -> int:
 
     api = HfApi(token=token)
 
+    # Initialize rate limiter for large uploads (150k files = ~12.5 hours at 1000 req/5min)
+    if args.rate_limit_aware:
+        rate_limiter = RateLimiter(max_requests=args.rate_limit_max_requests, window_seconds=args.rate_limit_window)
+        print(f"[RateLimit] Enabled: max {args.rate_limit_max_requests} requests per {args.rate_limit_window}s")
+    else:
+        rate_limiter = None
+
     def list_existing_files() -> set:
         try:
             print("Listing files in target repo to determine already-uploaded files...")
+            if rate_limiter:
+                rate_limiter.acquire("list_repo_files")
             files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
             return set(files or [])
         except Exception as e:
@@ -311,49 +483,97 @@ def main() -> int:
     already_uploaded = existing_files.union(checkpoint_uploaded)
 
     def upload_segments() -> None:
+        nonlocal csv_uploaded_with_segments
         # existing_files is computed above when resume is requested
 
-        # If not resuming and hf offers upload_large_folder, use it for speed
-        if not args.resume and hasattr(api, "upload_large_folder"):
-            print("Attempting HfApi.upload_large_folder for optimized large uploads (will fall back on failure)...")
+        if args.resume_only:
+            print("Resume-only mode: no upload will be performed.")
+            files: List[Tuple[Path, str]] = []
+            for p in segments_path.rglob("*"):
+                if p.is_file():
+                    rel = p.relative_to(segments_path).as_posix()
+                    repo_path = f"{args.segments_path_in_repo}/{rel}"
+                    run_stats['bytes_planned'] += p.stat().st_size
+                    if repo_path in already_uploaded:
+                        checkpoint_hash = checkpoint_hashes.get(repo_path)
+                        if checkpoint_hash:
+                            local_hash = compute_sha256(p)
+                            if local_hash == checkpoint_hash:
+                                run_stats['skipped'] += 1
+                                append_progress(p, repo_path, 'skipped', 'already uploaded')
+                                continue
+                    files.append((p, repo_path))
 
-            # compute total bytes locally for ETA/progress
+            run_stats['planned'] = len(files)
+            for local_path, repo_path in files:
+                append_progress(local_path, repo_path, 'planned', 'resume-only')
+            return
+
+        if hasattr(api, "upload_large_folder"):
+            staging_root = checkpoint_dir / "staging" / repo_id.replace("/", "__")
+            print(f"Preparing persistent staging folder at {staging_root} ...")
+            print(f"Checking for large species directories that need sharding...\n")
+            staged_root = _prepare_sharded_staging(staging_root, segments_path, csv_path)
+
             total_bytes = 0
-            for root, _, files in os.walk(segments_path):
-                for f in files:
+            total_files = 0
+            for root, _, files in os.walk(staged_root):
+                for name in files:
+                    file_path = Path(root) / name
+                    if ".cache" in file_path.parts:
+                        continue
                     try:
-                        total_bytes += (Path(root) / f).stat().st_size
+                        total_bytes += file_path.stat().st_size
+                        total_files += 1
                     except Exception:
                         continue
 
+            print(f"Found {total_files} staged files to upload with upload_large_folder()")
+
             kwargs = {
-                "folder_path": str(segments_path),
+                "folder_path": str(staged_root),
                 "repo_id": repo_id,
                 "repo_type": "dataset",
-                "path_in_repo": args.segments_path_in_repo,
-                "commit_message": args.commit_message,
-                "num_workers": args.max_workers,
-                "print_report": False,
+                "private": is_private,
+                "num_workers": max(1, args.max_workers),
+                "print_report": True,
+                "print_report_every": 60,
             }
 
-            upload_exc: list[Exception] = []
-
             def _run_upload():
+                # Create progress bar and filter
+                if tqdm is not None:
+                    pbar = tqdm(total=total_files, unit="file", unit_scale=False, desc="Uploading", leave=True)
+                    filter_writer = ProgressFilter(pbar, print)
+                else:
+                    pbar = None
+                    filter_writer = None
+                
                 try:
-                    retry_call("upload_large_folder", args.upload_attempts, args.retry_backoff, lambda: api.upload_large_folder(**kwargs))
-                except Exception as e:
-                    upload_exc.append(e)
+                    if filter_writer:
+                        with contextlib.redirect_stdout(filter_writer), contextlib.redirect_stderr(filter_writer):
+                            retry_call("upload_large_folder", args.upload_attempts, args.retry_backoff, lambda: api.upload_large_folder(**kwargs))
+                        filter_writer.flush()
+                    else:
+                        retry_call("upload_large_folder", args.upload_attempts, args.retry_backoff, lambda: api.upload_large_folder(**kwargs))
+                finally:
+                    if pbar:
+                        try:
+                            pbar.close()
+                        except Exception:
+                            pass
 
-            uploader = threading.Thread(target=_run_upload, daemon=True)
-            uploader.start()
-
-            # wait for upload to finish but do not immediately fail on error; fallback to per-file
-            uploader.join()
-            if upload_exc:
-                print(f"upload_large_folder failed: {upload_exc[0]}; falling back to per-file upload with throttling.")
-                # continue to per-file upload path below
+            try:
+                _run_upload()
+            except Exception as upload_exc:
+                print(f"upload_large_folder failed: {upload_exc}; falling back to per-file upload with throttling.")
             else:
                 print("upload_large_folder completed successfully.")
+                run_stats['planned'] = total_files
+                run_stats['bytes_planned'] = total_bytes
+                run_stats['uploaded'] = total_files
+                run_stats['bytes_uploaded'] = total_bytes
+                csv_uploaded_with_segments = True
                 return
 
         # Otherwise, perform per-file upload and skip existing files
@@ -378,6 +598,8 @@ def main() -> int:
                             skip = True
                     elif args.verify_remote and requests is not None:
                         local_size = p.stat().st_size
+                        if rate_limiter:
+                            rate_limiter.acquire("verify_remote")
                         remote_size, remote_etag = remote_file_info(repo_path)
                         if args.verify_etag and remote_etag:
                             # We do not compute a remote-matching hash locally here; rely on size and the checkpoint hash path.
@@ -403,22 +625,16 @@ def main() -> int:
 
         print(f"Found {len(files)} files to upload; launching {args.max_workers} workers")
 
-        # aggregated progress bar for per-file uploads
-        pbar = None
-        pbar_lock = None
-        if tqdm is not None:
-            try:
-                pbar = tqdm(total=run_stats['bytes_planned'], unit="B", unit_scale=True, desc="Uploading", leave=True)
-                import threading as _threading
-                pbar_lock = _threading.Lock()
-            except Exception:
-                pbar = None
+        # Progress bar for per-file uploads (counts files, not bytes)
+        file_pbar = FilesProgressBar(total_files=len(files), logger=print)
 
         def upload_one(pair: Tuple[Path, str]):
             local_path, repo_path = pair
             start = time.time()
             try:
                 def do_upload():
+                    if rate_limiter:
+                        rate_limiter.acquire("file_upload")
                     api.upload_file(
                         path_or_fileobj=str(local_path),
                         path_in_repo=repo_path,
@@ -430,41 +646,31 @@ def main() -> int:
                 retry_call(f"upload_file:{repo_path}", args.upload_attempts, args.retry_backoff, do_upload)
             except Exception as e:
                 elapsed = time.time() - start
+                # Log error to CSV for tracking
                 append_progress(local_path, repo_path, 'failed', str(e), elapsed)
+                # Update progress bar with error
+                file_pbar.update_file_error(1, f"{repo_path}: {str(e)[:60]}")
                 raise
             else:
                 elapsed = time.time() - start
-                append_progress(local_path, repo_path, 'uploaded', None, elapsed)
-                # update aggregated progress bar
-                if pbar is not None:
-                    size = 0
-                    try:
-                        size = local_path.stat().st_size
-                    except Exception:
-                        size = 0
-                    try:
-                        if pbar_lock:
-                            with pbar_lock:
-                                pbar.update(size)
-                        else:
-                            pbar.update(size)
-                    except Exception:
-                        pass
-                # throttle to reduce HF rate pressure
-                try:
-                    time.sleep(args.per_file_delay)
-                except Exception:
-                    pass
+                # Only log successful uploads to CSV (optional, can be verbose)
+                # append_progress(local_path, repo_path, 'uploaded', None, elapsed)
+                # Update progress bar
+                file_pbar.update_file(1)
                 return repo_path, local_path
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as ex:
-            futures = [ex.submit(upload_one, f) for f in files]
-            for fut in concurrent.futures.as_completed(futures):
-                try:
-                    repo_path, local_path = fut.result()
-                except Exception as e:
-                    print(f"Error uploading file: {e}")
-                    continue
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as ex:
+                futures = [ex.submit(upload_one, f) for f in files]
+                for fut in concurrent.futures.as_completed(futures):
+                    try:
+                        repo_path, local_path = fut.result()
+                    except Exception as e:
+                        # Error already logged above, just continue
+                        continue
+        finally:
+            file_pbar.close()
+            file_pbar.log_errors()
                 # mark as uploaded in checkpoint
                 if repo_path:
                     already_uploaded.add(repo_path)
@@ -501,6 +707,8 @@ def main() -> int:
             if args.resume and args.csv_path_in_repo in already_uploaded:
                 if args.verify_remote and requests is not None:
                     local_size = csv_path.stat().st_size
+                    if rate_limiter:
+                        rate_limiter.acquire("verify_remote")
                     remote_size, remote_etag = remote_file_info(args.csv_path_in_repo)
                     if args.verify_etag and remote_etag:
                         # no local etag available -> fall back to size check
@@ -518,6 +726,8 @@ def main() -> int:
 
             start = time.time()
             try:
+                if rate_limiter:
+                    rate_limiter.acquire("csv_upload")
                 api.upload_file(
                     path_or_fileobj=str(csv_path),
                     path_in_repo=args.csv_path_in_repo,
