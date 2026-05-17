@@ -29,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="hf-uploader-app",
+    name="HF_Dataset_Uploader_1.0",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
