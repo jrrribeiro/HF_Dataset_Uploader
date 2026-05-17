@@ -1,27 +1,27 @@
 # hf_upload_script
 
-Projeto isolado para uso via codigo/CLI.
+Standalone project for CLI-based operations.
 
-## Objetivo
-- Executar o fluxo de upload pela linha de comando.
-- Manter a logica totalmente separada do aplicativo GUI.
+## Objective
+*   Execute the upload workflow via command-line interface.
+*   Maintain clear separation of logic from the GUI-based application (`hf_upload_app`).
 
-## Instalacao
+## Installation
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-## Execucao
+## Usage
 ```bash
 python app.py --help
 ```
 
-## Estrutura
-- `app.py`: entrypoint CLI
-- `uploader/`: modulos de upload e suporte
-- `requirements.txt`: dependencias do projeto
-- `Temp/`: arquivos temporarios locais
+## Repository Structure
+*   `app.py`: CLI entrypoint.
+*   `uploader/`: Upload modules and support logic.
+*   `requirements.txt`: Project dependencies.
+*   `Temp/`: Local temporary files.
 
-## Observacoes
-- Este projeto nao compartilha arquivos com `hf_upload_app`.
-- Use `Temp/` para saídas temporarias, testes locais e artefatos intermediarios.
+## Notes
+*   This module operates independently from `hf_upload_app`.
+*   Use `Temp/` for temporary outputs, local tests, and intermediate artifacts.
