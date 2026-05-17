@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-APP_NAME = "BirdNET Uploader"
+APP_NAME = "HF Dataset Uploader"
 SCHEMA_VERSION = "1.0.0"
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 INDEX_SHARD_SIZE = 10_000
@@ -18,7 +18,7 @@ RETRY_MAX_BACKOFF_SECONDS = 30.0
 # Web UI constraints
 WEB_UI_MAX_SIZE_BYTES = 1_000_000_000  # 1 GB for browser uploads
 
-KEYRING_SERVICE = "birdnet-uploader"
+KEYRING_SERVICE = "hf-dataset-uploader"
 KEYRING_ACCOUNT = "hf_token"
 TOKEN_ENV_VAR = "HF_TOKEN"
 
@@ -31,26 +31,26 @@ def _resolve_path_from_env(env_name: str, default: Path) -> Path:
 
 
 def get_session_root() -> Path:
-    data_root = os.getenv("BIRDNET_UPLOADER_DATA_DIR")
+    data_root = os.getenv("HF_DATASET_UPLOADER_DATA_DIR")
     if data_root:
-        return _resolve_path_from_env("BIRDNET_UPLOADER_SESSION_DIR", Path(data_root).expanduser() / "sessions")
+        return _resolve_path_from_env("HF_DATASET_UPLOADER_SESSION_DIR", Path(data_root).expanduser() / "sessions")
     return _resolve_path_from_env(
-        "BIRDNET_UPLOADER_SESSION_DIR",
-        Path.home() / ".birdnet-uploader" / "sessions",
+        "HF_DATASET_UPLOADER_SESSION_DIR",
+        Path.home() / ".hf-dataset-uploader" / "sessions",
     )
 
 
 def get_cache_root() -> Path:
     return _resolve_path_from_env(
-        "BIRDNET_UPLOADER_CACHE_DIR",
-        Path.home() / ".birdnet-uploader" / "cache",
+        "HF_DATASET_UPLOADER_CACHE_DIR",
+        Path.home() / ".hf-dataset-uploader" / "cache",
     )
 
 
 def get_log_root() -> Path:
     return _resolve_path_from_env(
-        "BIRDNET_UPLOADER_LOG_DIR",
-        Path.home() / ".birdnet-uploader" / "logs",
+        "HF_DATASET_UPLOADER_LOG_DIR",
+        Path.home() / ".hf-dataset-uploader" / "logs",
     )
 
 

@@ -38,7 +38,7 @@ def handle_cli_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-@click.group(help="BirdNET local uploader CLI")
+@click.group(help="HF Dataset Uploader CLI")
 def cli() -> None:
     pass
 
@@ -151,7 +151,7 @@ def upload_cmd(
     Token resolution (in order of priority):
     1. --token option (if provided)
     2. HF_TOKEN environment variable (useful for Docker/CI)
-    3. Keyring secure storage (use 'birdnet-uploader login' to store)
+    3. Keyring secure storage (use 'hf-dataset-uploader login' to store)
 
     The command creates/uses a session checkpoint for resumable uploads.
     """

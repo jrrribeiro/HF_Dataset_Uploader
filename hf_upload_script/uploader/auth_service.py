@@ -63,7 +63,7 @@ class AuthService:
     def require_token(self) -> str:
         token = self.get_token()
         if not token:
-            raise AuthenticationError("No stored token found. Run 'birdnet-uploader login' first.")
+            raise AuthenticationError("No stored token found. Run 'hf-dataset-uploader login' first.")
         return token
 
     def clear_token(self) -> None:
