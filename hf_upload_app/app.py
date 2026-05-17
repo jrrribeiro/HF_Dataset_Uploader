@@ -7,7 +7,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def main() -> None:
-    cli_mode = os.getenv("BIRDNET_UPLOADER_CLI", "").lower() in ("1", "true", "yes")
+    cli_mode = os.getenv("HF_DATASET_UPLOADER_CLI", "").lower() in ("1", "true", "yes")
     has_args = len(sys.argv) > 1
 
     try:
@@ -21,8 +21,8 @@ def main() -> None:
             from uploader.web_ui import create_uploader_app
 
             app = create_uploader_app()
-            port = int(os.getenv("PORT") or os.getenv("BIRDNET_UPLOADER_PORT") or "7860")
-            host = os.getenv("BIRDNET_UPLOADER_HOST") or "0.0.0.0"
+            port = int(os.getenv("PORT") or os.getenv("HF_DATASET_UPLOADER_PORT") or "7860")
+            host = os.getenv("HF_DATASET_UPLOADER_HOST") or "0.0.0.0"
             logger.info(f"Launching HF Dataset Uploader Web UI on {host}:{port}")
             print("\n" + "=" * 60)
             print("HF Dataset Uploader Web UI")
