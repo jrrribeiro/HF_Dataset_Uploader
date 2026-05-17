@@ -88,7 +88,7 @@ def _handle_upload(token: str, repo_id: str, files, csv_file, remote_base: str, 
         return "Error: token and repo_id are required." , None
 
     # Store uploaded files to a temp directory
-    tmpdir = Path(tempfile.mkdtemp(prefix="birdnet-upload-"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="hf-dataset-uploader-upload-"))
     try:
         progress(0, desc="Initializing upload...")
         _store_uploaded_files(files or [], tmpdir)

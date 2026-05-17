@@ -17,7 +17,7 @@ from .deduplicator import Deduplicator
 from .session_manager import SessionManager
 
 
-logger = logging.getLogger("birdnet_uploader.batch_uploader")
+logger = logging.getLogger("hf_dataset_uploader.batch_uploader")
 
 
 class BatchUploader:

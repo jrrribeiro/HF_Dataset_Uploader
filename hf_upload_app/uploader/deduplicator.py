@@ -18,7 +18,7 @@ from .hash_utils import compute_file_hash
 from .exceptions import ValidationError
 
 
-logger = logging.getLogger("birdnet_uploader.deduplicator")
+logger = logging.getLogger("hf_dataset_uploader.deduplicator")
 
 
 class Deduplicator:
