@@ -38,7 +38,7 @@ def handle_cli_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-@click.group(help="BirdNET local uploader CLI")
+@click.group(help="HF Dataset Uploader CLI")
 def cli() -> None:
     pass
 
