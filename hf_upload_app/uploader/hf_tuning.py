@@ -24,3 +24,24 @@ def configure_hf_http_backoff() -> None:
     import os
 
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    # Ensure HF Hub HTTP calls have reasonable default timeouts to avoid
+    # hanging with no read timeout (which yields ReadTimeoutError with
+    # "read timeout=None"). We monkeypatch requests.Session.request to
+    # supply a default timeout tuple (connect, read) when none is provided.
+    try:
+        import requests
+
+        connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+        read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
+        _orig_session_request = requests.Session.request
+
+        def _session_request_with_default_timeout(self, method, url, *args, **kwargs):
+            if "timeout" not in kwargs or kwargs.get("timeout") is None:
+                kwargs["timeout"] = (connect_timeout, read_timeout)
+            return _orig_session_request(self, method, url, *args, **kwargs)
+
+        requests.Session.request = _session_request_with_default_timeout
+    except Exception:
+        # If requests isn't available or monkeypatch fails, continue without
+        # crashing; calling code will handle timeouts as best it can.
+        pass
