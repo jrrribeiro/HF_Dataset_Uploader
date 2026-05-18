@@ -223,11 +223,14 @@ def perform_upload(
             _check_cancel()
             _progress(0.52, "Building manifest")
             manifest = build_manifest_from_scan(repo_id, summary, csv_stats=csv_stats)
+            connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+            read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
             api.upload_file(
                 path_or_fileobj=manifest_to_bytes(manifest),
                 path_in_repo="index/manifest.json",
                 repo_id=repo_id,
                 repo_type="dataset",
+                timeout=(connect_timeout, read_timeout),
             )
 
             if csv_path:
@@ -246,11 +249,14 @@ def perform_upload(
                 for idx, shard_path in enumerate(shards, start=1):
                     _check_cancel()
                     _progress(0.58 + (0.07 * (idx / total_shards)), f"Uploading shard {idx}/{total_shards}: {shard_path.name}")
+                    connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                    read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
                     api.upload_file(
                         path_or_fileobj=str(shard_path),
                         path_in_repo=f"index/shards/{shard_path.name}",
                         repo_id=repo_id,
                         repo_type="dataset",
+                        timeout=(connect_timeout, read_timeout),
                     )
 
             _check_cancel()

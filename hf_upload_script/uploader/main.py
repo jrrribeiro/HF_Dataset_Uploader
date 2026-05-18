@@ -262,11 +262,14 @@ def upload_cmd(
 
                     def _target() -> None:
                         try:
+                            connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                            read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
                             api.upload_file(
                                 path_or_fileobj=path_or_fileobj,
                                 path_in_repo=path_in_repo,
                                 repo_id=repo_id,
                                 repo_type="dataset",
+                                timeout=(connect_timeout, read_timeout),
                             )
                         except Exception as exc:  # pragma: no cover - network behavior
                             result["exc"] = exc
@@ -305,10 +308,13 @@ def upload_cmd(
 
                     def _target() -> None:
                         try:
+                            connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                            read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
                             kwargs: dict[str, Any] = {
                                 "folder_path": folder_path,
                                 "repo_id": repo_id,
                                 "repo_type": "dataset",
+                                "timeout": (connect_timeout, read_timeout),
                             }
                             if path_in_repo:
                                 kwargs["path_in_repo"] = path_in_repo
@@ -372,15 +378,18 @@ def upload_cmd(
                 result: dict[str, Any] = {"exc": None}
 
                 def _target() -> None:
-                    try:
-                        api.upload_file(
-                            path_or_fileobj=path_or_fileobj,
-                            path_in_repo=path_in_repo,
-                            repo_id=repo_id,
-                            repo_type="dataset",
-                        )
-                    except Exception as exc:  # pragma: no cover - network behavior
-                        result["exc"] = exc
+                        try:
+                            connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                            read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
+                            api.upload_file(
+                                path_or_fileobj=path_or_fileobj,
+                                path_in_repo=path_in_repo,
+                                repo_id=repo_id,
+                                repo_type="dataset",
+                                timeout=(connect_timeout, read_timeout),
+                            )
+                        except Exception as exc:  # pragma: no cover - network behavior
+                            result["exc"] = exc
 
                 t = threading.Thread(target=_target, daemon=True)
                 t.start()

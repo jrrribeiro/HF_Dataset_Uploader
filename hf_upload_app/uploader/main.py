@@ -262,14 +262,18 @@ def upload_cmd(
 
                     def _target() -> None:
                         try:
-                            api.upload_file(
-                                path_or_fileobj=path_or_fileobj,
-                                path_in_repo=path_in_repo,
-                                repo_id=repo_id,
-                                repo_type="dataset",
-                            )
+                                connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                                read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
+                                api.upload_file(
+                                    path_or_fileobj=path_or_fileobj,
+                                    path_in_repo=path_in_repo,
+                                    repo_id=repo_id,
+                                    repo_type="dataset",
+                                    timeout=(connect_timeout, read_timeout),
+                                )
                         except Exception as exc:  # pragma: no cover - network behavior
                             result["exc"] = exc
+                    
 
                     t = threading.Thread(target=_target, daemon=True)
                     t.start()
@@ -305,16 +309,20 @@ def upload_cmd(
 
                     def _target() -> None:
                         try:
-                            kwargs: dict[str, Any] = {
-                                "folder_path": folder_path,
-                                "repo_id": repo_id,
-                                "repo_type": "dataset",
-                            }
-                            if path_in_repo:
-                                kwargs["path_in_repo"] = path_in_repo
-                            api.upload_folder(**kwargs)
+                                connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                                read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
+                                kwargs: dict[str, Any] = {
+                                    "folder_path": folder_path,
+                                    "repo_id": repo_id,
+                                    "repo_type": "dataset",
+                                    "timeout": (connect_timeout, read_timeout),
+                                }
+                                if path_in_repo:
+                                    kwargs["path_in_repo"] = path_in_repo
+                                api.upload_folder(**kwargs)
                         except Exception as exc:  # pragma: no cover - network behavior
                             result["exc"] = exc
+
 
                     t = threading.Thread(target=_target, daemon=True)
                     t.start()
