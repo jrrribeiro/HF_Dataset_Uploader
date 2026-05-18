@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import threading
@@ -22,6 +22,9 @@ class SessionManager:
         self.session_dir = get_session_root() / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+
+
+    UTC = timezone.utc
 
     @classmethod
     def create_session(cls, metadata: dict[str, Any] | None = None) -> "SessionManager":

@@ -5,7 +5,7 @@ import hashlib
 import os
 import logging
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 import threading
@@ -19,6 +19,8 @@ from .exceptions import ValidationError
 
 
 logger = logging.getLogger("hf_dataset_uploader.deduplicator")
+
+UTC = timezone.utc
 
 
 class Deduplicator:
