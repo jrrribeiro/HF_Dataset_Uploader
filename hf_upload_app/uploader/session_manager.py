@@ -16,15 +16,13 @@ class SessionManager:
 
     def __init__(self, session_id: str | None = None):
         if session_id is None:
-            now = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             session_id = f"upload-{now}"
         self.session_id = session_id
         self.session_dir = get_session_root() / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
-
-    UTC = timezone.utc
 
     @classmethod
     def create_session(cls, metadata: dict[str, Any] | None = None) -> "SessionManager":
@@ -83,7 +81,7 @@ class SessionManager:
             checkpoint["uploaded"] = int(checkpoint["uploaded"]) + 1
             checkpoint["status"] = status
             checkpoint["last_completed_file"] = remote_path
-            checkpoint["last_update_at"] = datetime.now(UTC).isoformat()
+            checkpoint["last_update_at"] = datetime.now(timezone.utc).isoformat()
             checkpoint["bytes_uploaded"] = int(checkpoint.get("bytes_uploaded", 0)) + int(bytes_uploaded)
             checkpoint["uploaded_files"].append(remote_path)
             self.save_checkpoint(checkpoint)
@@ -99,7 +97,7 @@ class SessionManager:
             checkpoint["status"] = "failed"
             checkpoint["last_failed_file"] = remote_path
             checkpoint["last_error"] = error
-            checkpoint["last_update_at"] = datetime.now(UTC).isoformat()
+            checkpoint["last_update_at"] = datetime.now(timezone.utc).isoformat()
             checkpoint["failed_files"].append({"remote_path": remote_path, "error": error})
             self.save_checkpoint(checkpoint)
             return checkpoint
@@ -129,7 +127,7 @@ class SessionManager:
             file_chunks = checkpoint["chunked_uploads"][remote_path]
             file_chunks["chunks_completed"].append(chunk_index)
             file_chunks["total_bytes_uploaded"] = int(file_chunks.get("total_bytes_uploaded", 0)) + chunk_bytes
-            file_chunks["last_chunk_at"] = datetime.now(UTC).isoformat()
+            file_chunks["last_chunk_at"] = datetime.now(timezone.utc).isoformat()
             
             self.save_checkpoint(checkpoint)
             return checkpoint

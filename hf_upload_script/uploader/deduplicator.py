@@ -20,9 +20,6 @@ from .exceptions import ValidationError
 
 logger = logging.getLogger("hf_dataset_uploader.deduplicator")
 
-UTC = timezone.utc
-
-
 class Deduplicator:
     """Check remote file presence and cache the remote path index locally."""
 
@@ -138,7 +135,7 @@ class Deduplicator:
         payload = {
             "repo_id": self.repo_id,
             "repo_type": self.repo_type,
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "remote_paths": sorted(remote_paths),
         }
         temp_path = self.cache_path.with_suffix(".json.tmp")
