@@ -14,7 +14,7 @@ This repository enables a scientific workflow where uploads are later consumed i
 ## 📦 Project Structure
 The repository is split into two independent modules:
 *   `hf_upload_script`: Standalone CLI for automation, scripting, and pipeline integration.
-*   `hf_upload_app`: Gradio-based GUI application with support for packaging into a standalone Windows executable.
+*   `hf_upload_app`: Native Tkinter GUI application with support for packaging into a standalone Windows executable. The previous Gradio demo was moved to `hf_upload_app/Temp/gradio_ui/` for development.
 
 ## 🚀 Quick Start
 
@@ -25,9 +25,9 @@ python app.py --help
 ```
 
 ### 2. GUI/App Usage (`hf_upload_app`)
-Navigate to `hf_upload_app/`, install dependencies, and run:
+Navigate to `hf_upload_app/`, install dependencies, and run the native GUI:
 ```bash
-python app.py
+python app_native.py
 ```
 
 ## 🛠️ Key Features

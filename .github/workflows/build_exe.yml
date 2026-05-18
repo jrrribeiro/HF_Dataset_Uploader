@@ -35,6 +35,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: hf_upload_app/dist/HF_Dataset_Uploader_1.0.exe
+          files: hf_upload_app/dist/HF_Dataset_Uploader_Native.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

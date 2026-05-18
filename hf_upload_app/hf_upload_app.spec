@@ -2,18 +2,15 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
+# No gradio packaging for native EXE; keep datas minimal
 datas = []
-datas += collect_data_files("gradio")
-datas += collect_data_files("gradio_client")
-datas += collect_data_files("safehttpx")
-datas += collect_data_files("groovy")
 
 a = Analysis(
-    ["app.py"],
+    ["app_native.py"],
     pathex=["."],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=["tkinter"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -29,7 +26,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="HF_Dataset_Uploader_1.0",
+    name="HF_Dataset_Uploader_Native",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
