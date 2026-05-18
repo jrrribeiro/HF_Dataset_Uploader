@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable
 
 from .config import SCHEMA_VERSION, INDEX_SHARD_SIZE
-import tempfile
-import os
-import json
-from pathlib import Path
-from typing import List
 
 try:
     import pandas as pd  # type: ignore
@@ -22,22 +19,44 @@ def _project_from_repo(repo_id: str) -> str:
     return repo_id.split("/", 1)[1]
 
 
-def build_manifest_from_scan(repo_id: str, scan_summary: dict[str, Any], *, csv_rows: Iterable[dict[str, Any]] | None = None) -> dict[str, Any]:
+def summarize_csv_rows(csv_rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    total_detections = 0
+    unique_files: set[str] = set()
+
+    for row in csv_rows:
+        total_detections += 1
+        file_name = str(row.get("audio_file") or row.get("file") or "")
+        if file_name:
+            unique_files.add(file_name)
+
+    return {
+        "total_detections": total_detections,
+        "total_audio_files": len(unique_files),
+    }
+
+
+def build_manifest_from_scan(
+    repo_id: str,
+    scan_summary: dict[str, Any],
+    *,
+    csv_rows: Iterable[dict[str, Any]] | None = None,
+    csv_stats: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     project_slug = _project_from_repo(repo_id)
     total_files = int(scan_summary.get("total_files", 0))
     total_size = int(scan_summary.get("total_size", 0))
 
     total_detections = 0
     total_audio_files = total_files
-    shards: list[str] = []
 
-    if csv_rows is not None:
-        rows = list(csv_rows)
-        total_detections = len(rows)
-        unique_files = {str(r.get("audio_file") or r.get("file") or "") for r in rows}
-        unique_files = {p for p in unique_files if p}
-        if unique_files:
-            total_audio_files = len(unique_files)
+    if csv_stats is not None:
+        total_detections = int(csv_stats.get("total_detections", 0))
+        total_audio_files = int(csv_stats.get("total_audio_files", total_files) or total_files)
+    elif csv_rows is not None:
+        csv_summary = summarize_csv_rows(csv_rows)
+        total_detections = csv_summary["total_detections"]
+        if csv_summary["total_audio_files"]:
+            total_audio_files = csv_summary["total_audio_files"]
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -47,7 +66,7 @@ def build_manifest_from_scan(repo_id: str, scan_summary: dict[str, Any], *, csv_
             "total_detections": int(total_detections),
             "total_audio_files": int(total_audio_files),
             "shard_size": INDEX_SHARD_SIZE,
-            "shards": shards,
+            "shards": [],
         },
     }
 
@@ -58,18 +77,23 @@ def manifest_to_bytes(manifest: dict[str, Any]) -> bytes:
     return json.dumps(manifest, ensure_ascii=True, indent=2).encode("utf-8")
 
 
-def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: int = INDEX_SHARD_SIZE) -> List[Path]:
-    rows_list = list(rows)
-    if not rows_list:
+def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: int = INDEX_SHARD_SIZE) -> list[Path]:
+    rows_iter = iter(rows)
+    first_row = next(rows_iter, None)
+    if first_row is None:
         return []
 
-    out_paths: List[Path] = []
+    out_paths: list[Path] = []
     tmpdir = Path(tempfile.mkdtemp(prefix="hf-dataset-uploader-shards-"))
 
     try:
-        for i in range(0, len(rows_list), shard_size):
-            chunk = rows_list[i : i + shard_size]
-            shard_index = i // shard_size
+        buffered_rows = [first_row]
+        shard_index = 0
+        while buffered_rows:
+            remaining = shard_size - len(buffered_rows)
+            if remaining > 0:
+                buffered_rows.extend(islice(rows_iter, remaining))
+            chunk = buffered_rows
             if _HAVE_PANDAS:
                 df = pd.DataFrame.from_records(chunk)
                 shard_name = f"shard-{shard_index:06d}.parquet"
@@ -83,6 +107,8 @@ def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: in
                         fh.write(json.dumps(r, ensure_ascii=True) + "\n")
 
             out_paths.append(shard_path)
+            shard_index += 1
+            buffered_rows = list(islice(rows_iter, shard_size))
 
         return out_paths
     except Exception:

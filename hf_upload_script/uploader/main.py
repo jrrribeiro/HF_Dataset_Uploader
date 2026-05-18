@@ -13,7 +13,7 @@ import logging
 import sys
 
 from .hf_tuning import configure_hf_http_backoff
-from .config import AUDIO_EXTENSIONS
+from .config import AUDIO_EXTENSIONS, INDEX_SHARD_SIZE
 
 # Ensure HF backoff tuning is applied before importing modules that may import huggingface_hub
 configure_hf_http_backoff()
@@ -467,17 +467,16 @@ def upload_cmd(
 
     manifest_uploaded = False
     try:
-        from .manifest import build_manifest_from_scan, manifest_to_bytes
+        from .manifest import build_manifest_from_scan, manifest_to_bytes, summarize_csv_rows
 
-        csv_rows = None
+        csv_stats = None
         if csv_file:
             import csv
 
             with open(csv_file, newline="", encoding="utf-8") as fh:
-                reader = csv.DictReader(fh)
-                csv_rows = list(reader)
+            csv_stats = summarize_csv_rows(csv.DictReader(fh))
 
-        manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
+        manifest = build_manifest_from_scan(repo_id, summary, csv_stats=csv_stats)
         _upload_with_retry(manifest_to_bytes(manifest), "index/manifest.json")
         manifest_uploaded = True
         click.echo("Manifest uploaded: index/manifest.json")
@@ -487,9 +486,12 @@ def upload_cmd(
     try:
         from .manifest import write_shards_from_csv_rows
 
-        if csv_file and csv_rows and manifest_uploaded:
+        if csv_file and manifest_uploaded:
             click.echo("Generating index shards from CSV detections...")
-            shards = write_shards_from_csv_rows(csv_rows, shard_size=int(__import__("src.uploader.config", fromlist=["INDEX_SHARD_SIZE"]).INDEX_SHARD_SIZE))
+            import csv
+
+            with open(csv_file, newline="", encoding="utf-8") as fh:
+                shards = write_shards_from_csv_rows(csv.DictReader(fh), shard_size=INDEX_SHARD_SIZE)
             for shard_path in shards:
                 shard_name = shard_path.name
                 click.echo(f"Uploading shard: index/shards/{shard_name}")
