@@ -20,6 +20,8 @@ python app_native.py
 
 Isso iniciará a interface nativa Tkinter.
 
+Na tela principal você pode adicionar pastas, arquivos soltos ou arquivos compactados, acompanhar a barra de progresso, ver o log em tempo real, copiar o log e interromper o envio com `Stop Upload`.
+
 ## Gerar executável (PyInstaller) - Local
 
 Um script PowerShell `build_windows.ps1` está disponível para automatizar a geração local:

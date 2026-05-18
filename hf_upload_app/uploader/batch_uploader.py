@@ -5,6 +5,7 @@ import concurrent.futures
 import os
 import logging
 import threading
+from collections.abc import Sequence
 from typing import List, Tuple, Any, TYPE_CHECKING
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -110,14 +111,26 @@ class BatchUploader:
         remote_base: str = "",
         batch_size: int | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: Any | None = None,
+        log_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         batch_size = batch_size or MAX_BATCH_SIZE
         uploaded = 0
         skipped = 0
         failed = 0
 
+        def _log(message: str) -> None:
+            logger.info(message)
+            if log_callback:
+                log_callback(message)
+
+        def _check_cancel() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Upload cancelled")
+
         to_upload: List[Tuple[str, str, int]] = []
         for info in file_infos:
+            _check_cancel()
             full_path = str(info["full_path"])
             relative = info["relative_path"].lstrip("/")
             remote_path = f"{remote_base.rstrip('/')}/{relative}" if remote_base else relative
@@ -135,6 +148,7 @@ class BatchUploader:
 
         if not self.max_workers or self.max_workers <= 1:
             for full_path, remote_path, size in to_upload:
+                _check_cancel()
                 try:
                     self._upload_file_with_retry(full_path, remote_path)
                     try:
@@ -164,6 +178,7 @@ class BatchUploader:
         FOLDER_UPLOAD_THRESHOLD = 8
 
         for local_dir, items in dir_groups.items():
+            _check_cancel()
             if len(items) >= FOLDER_UPLOAD_THRESHOLD:
                 # Determine remote target directory (use the remote path of first item)
                 _, sample_remote, _ = items[0]
@@ -173,6 +188,7 @@ class BatchUploader:
                 max_attempts = self.max_retries or 3
                 last_exc = None
                 while attempts <= max_attempts:
+                    _check_cancel()
                     try:
                         logger.info(
                             "Starting upload_folder: %s -> %s (attempt %d, %d files)",
@@ -225,6 +241,7 @@ class BatchUploader:
         def _worker(task: Tuple[str, str, int]) -> Tuple[str, str]:
             full_path, remote_path, size = task
             try:
+                _check_cancel()
                 logger.debug("Worker starting upload for %s", remote_path)
                 start = time.time()
                 self._upload_file_with_retry(full_path, remote_path)
@@ -244,6 +261,7 @@ class BatchUploader:
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
             futures = {ex.submit(_worker, t): t for t in remaining_tasks}
             for fut in concurrent.futures.as_completed(futures):
+                _check_cancel()
                 res = fut.result()
                 task = futures.get(fut)
                 if res[0] == "ok":
@@ -261,6 +279,7 @@ class BatchUploader:
             seq_retry_backoff = max(self.initial_backoff, 1.0)
             # Attempt sequential retries for failed tasks
             for full_path, remote_path, size in failed_tasks:
+                _check_cancel()
                 try:
                     time.sleep(seq_retry_backoff)
                     self._upload_file_with_retry(full_path, remote_path)

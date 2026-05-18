@@ -1,140 +1,292 @@
 from __future__ import annotations
 
+import csv
+import logging
 import shutil
 import tarfile
 import tempfile
+import threading
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Callable
+from typing import Any, Callable, Iterable
 
 from huggingface_hub import HfApi
 
+from .batch_uploader import BatchUploader
+from .deduplicator import Deduplicator
+from .manifest import build_manifest_from_scan, manifest_to_bytes, write_shards_from_csv_rows
 from .repo_service import RepositoryService
 from .scanner import LocalScanner
-from .deduplicator import Deduplicator
-from .batch_uploader import BatchUploader
-from .manifest import build_manifest_from_scan, manifest_to_bytes, write_shards_from_csv_rows
 from .session_manager import SessionManager
 from .config import WEB_UI_MAX_SIZE_BYTES
 
 
-def perform_upload(token: str, repo_id: str, file_paths: List[str] | None, csv_path: str | None, remote_base: str, workers: int | None, progress_callback: Callable[[float, str], None] | None = None) -> dict:
-    """Perform upload using the existing backend modules.
+class _CallbackLogHandler(logging.Handler):
+    def __init__(self, callback: Callable[[str], None]):
+        super().__init__(level=logging.INFO)
+        self._callback = callback
 
-    progress_callback(percent: float (0.0-1.0), message: str)
-    Returns a result dict with uploaded/skipped/failed counts.
-    """
-    def prog(p: float, desc: str = ""):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            self._callback(message)
+        except Exception:
+            pass
+
+
+@contextmanager
+def _capture_logs(log_callback: Callable[[str], None] | None):
+    if log_callback is None:
+        yield
+        return
+
+    handler = _CallbackLogHandler(log_callback)
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(previous_level)
+
+
+def _is_archive(path: Path) -> bool:
+    suffixes = [suffix.lower() for suffix in path.suffixes]
+    return suffixes[-1:] in ([".zip"], [".tar"], [".gz"]) or suffixes[-2:] == [".tar", ".gz"]
+
+
+def _archive_extract_name(path: Path) -> str:
+    if path.suffixes[-2:] == [".tar", ".gz"]:
+        return path.name[:-7]
+    if path.suffixes[-1:] == [".gz"] and path.name.endswith(".tgz"):
+        return path.name[:-4]
+    return path.stem
+
+
+def _copy_file_to_staging(path: Path, staging_root: Path) -> Path:
+    staged_dir = staging_root / path.stem
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    target = staged_dir / path.name
+    shutil.copy2(path, target)
+    return staged_dir
+
+
+def _scan_single_file(path: Path) -> dict[str, Any]:
+    species = path.stem.split("_")[0] or "unknown"
+    size = path.stat().st_size
+    return {
+        "total_files": 1,
+        "total_size": size,
+        "by_species": {
+            species: [
+                {
+                    "name": path.name,
+                    "full_path": str(path),
+                    "relative_path": path.name,
+                    "species": species,
+                    "size": size,
+                }
+            ]
+        },
+    }
+
+
+def _merge_scan_summaries(summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    merged_by_species: dict[str, list[dict[str, Any]]] = {}
+    total_files = 0
+    total_size = 0
+    for summary in summaries:
+        total_files += int(summary.get("total_files", 0))
+        total_size += int(summary.get("total_size", 0))
+        for species, items in summary.get("by_species", {}).items():
+            merged_by_species.setdefault(species, []).extend(items)
+    return {
+        "total_files": total_files,
+        "total_size": total_size,
+        "by_species": merged_by_species,
+    }
+
+
+def perform_upload(
+    token: str,
+    repo_id: str,
+    selected_paths: list[str] | None,
+    csv_path: str | None,
+    workers: int | None,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
+    log_callback: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Upload selected folders, files, or archives with live progress and log callbacks."""
+
+    def _check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Upload cancelled")
+
+    def _progress(value: float, message: str) -> None:
         if progress_callback:
-            try:
-                progress_callback(p, desc)
-            except Exception:
-                pass
+            progress_callback(max(0.0, min(1.0, value)), message)
 
     if not token or not repo_id:
         raise ValueError("token and repo_id are required")
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="hf-dataset-uploader-native-"))
+    paths = [Path(path).expanduser().resolve() for path in (selected_paths or [])]
+    if not paths:
+        raise ValueError("No files or folders selected")
+
+    staging_root = Path(tempfile.mkdtemp(prefix="hf-dataset-uploader-native-"))
     try:
-        prog(0.0, "Initializing upload")
-        # copy files into tmpdir
-        audio_dir = tmpdir / "audio"
-        audio_dir.mkdir(parents=True, exist_ok=True)
+        with _capture_logs(log_callback):
+            _progress(0.0, "Starting upload")
+            logging.getLogger(__name__).info("Selected %d input item(s)", len(paths))
 
-        if file_paths:
-            for p in file_paths:
-                pth = Path(p)
-                if pth.is_file():
-                    suffix = pth.suffix.lower()
-                    if suffix in {".zip", ".tar", ".gz", ".tar.gz"}:
-                        try:
-                            if suffix == ".zip":
-                                with zipfile.ZipFile(pth, "r") as zf:
-                                    zf.extractall(audio_dir)
-                            else:
-                                with tarfile.open(pth, "r:*") as tf:
-                                    tf.extractall(audio_dir)
-                        except Exception:
-                            # fallback: copy
-                            shutil.copy(pth, audio_dir / pth.name)
+            expanded_roots: list[Path] = []
+            single_file_summaries: list[dict[str, Any]] = []
+
+            for index, source in enumerate(paths, start=1):
+                _check_cancel()
+                if source.is_dir():
+                    expanded_roots.append(source)
+                    logging.getLogger(__name__).info("Added folder: %s", source)
+                    _progress(0.05 + (0.1 * index / len(paths)), f"Added folder {source.name}")
+                    continue
+
+                if not source.is_file():
+                    raise ValueError(f"Path does not exist: {source}")
+
+                if _is_archive(source):
+                    archive_root = staging_root / _archive_extract_name(source)
+                    archive_root.mkdir(parents=True, exist_ok=True)
+                    logging.getLogger(__name__).info("Extracting archive: %s", source)
+                    if source.suffix.lower() == ".zip":
+                        with zipfile.ZipFile(source, "r") as zf:
+                            zf.extractall(archive_root)
                     else:
-                        shutil.copy(pth, audio_dir / pth.name)
+                        with tarfile.open(source, "r:*") as tf:
+                            tf.extractall(archive_root)
+                    expanded_roots.append(archive_root)
+                    _progress(0.05 + (0.1 * index / len(paths)), f"Extracted {source.name}")
+                    continue
 
-        # Validate size
-        total_size = sum(f.stat().st_size for f in audio_dir.rglob("*") if f.is_file())
-        if total_size > WEB_UI_MAX_SIZE_BYTES:
-            raise RuntimeError(f"Upload exceeds max size {WEB_UI_MAX_SIZE_BYTES} bytes")
+                staged_root = _copy_file_to_staging(source, staging_root)
+                single_file_summaries.append(_scan_single_file(staged_root / source.name))
+                logging.getLogger(__name__).info("Queued file: %s", source)
+                _progress(0.05 + (0.1 * index / len(paths)), f"Queued file {source.name}")
 
-        api = HfApi(token=token)
-        repo_service = RepositoryService(token)
-        prog(0.2, "Validating repository")
-        try:
-            validation = repo_service.validate_repo(repo_id)
-            if not validation.get("is_valid"):
+            api = HfApi(token=token)
+            repo_service = RepositoryService(token)
+            _progress(0.15, "Validating repository")
+            try:
+                validation = repo_service.validate_repo(repo_id)
+                if not validation.get("is_valid"):
+                    repo_service.create_dataset(repo_id, private=True)
+            except Exception:
                 repo_service.create_dataset(repo_id, private=True)
-        except Exception:
-            # try create
-            repo_service.create_dataset(repo_id, private=True)
 
-        prog(0.3, "Scanning files")
-        scanner = LocalScanner()
-        summary = scanner.scan_folder(str(audio_dir))
-        # Upload CSV if provided
-        if csv_path:
-            try:
-                api.upload_file(path_or_fileobj=str(csv_path), path_in_repo="index/detections.csv", repo_id=repo_id, repo_type="dataset")
-            except Exception:
-                # continue without CSV
-                pass
+            scanner = LocalScanner()
+            scan_summaries: list[dict[str, Any]] = list(single_file_summaries)
+            total_scan_roots = len(expanded_roots)
 
-        prog(0.5, "Building manifest and uploading")
-        csv_rows = None
-        if csv_path:
-            try:
-                import csv
+            for index, root in enumerate(expanded_roots, start=1):
+                _check_cancel()
+
+                def root_progress(local_fraction: float, message: str, *, root_name: str = root.name) -> None:
+                    base = 0.20 + (0.20 * (index - 1) / max(total_scan_roots, 1))
+                    span = 0.20 / max(total_scan_roots, 1)
+                    _progress(base + (span * local_fraction), f"{root_name}: {message}")
+
+                logging.getLogger(__name__).info("Scanning root %d/%d: %s", index, total_scan_roots, root)
+                scan_summaries.append(
+                    scanner.scan_folder(
+                        str(root),
+                        progress_callback=root_progress,
+                        cancel_event=cancel_event,
+                    )
+                )
+
+            _check_cancel()
+            summary = _merge_scan_summaries(scan_summaries)
+            _progress(0.45, f"Found {summary['total_files']} audio files")
+
+            csv_rows = None
+            if csv_path:
+                _check_cancel()
+                _progress(0.48, "Reading CSV")
                 with open(csv_path, newline="", encoding="utf-8") as fh:
-                    reader = csv.DictReader(fh)
-                    csv_rows = list(reader)
-            except Exception:
-                csv_rows = None
+                    csv_rows = list(csv.DictReader(fh))
 
-        manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
-        api.upload_file(path_or_fileobj=manifest_to_bytes(manifest), path_in_repo="index/manifest.json", repo_id=repo_id, repo_type="dataset")
+            _check_cancel()
+            _progress(0.52, "Building manifest")
+            manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
+            api.upload_file(
+                path_or_fileobj=manifest_to_bytes(manifest),
+                path_in_repo="index/manifest.json",
+                repo_id=repo_id,
+                repo_type="dataset",
+            )
 
-        # shards
-        if csv_rows:
-            try:
+            if csv_rows:
+                _check_cancel()
+                _progress(0.58, "Creating CSV shards")
                 shards = write_shards_from_csv_rows(csv_rows)
                 for shard_path in shards:
-                    try:
-                        api.upload_file(path_or_fileobj=str(shard_path), path_in_repo=f"index/shards/{shard_path.name}", repo_id=repo_id, repo_type="dataset")
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+                    _check_cancel()
+                    api.upload_file(
+                        path_or_fileobj=str(shard_path),
+                        path_in_repo=f"index/shards/{shard_path.name}",
+                        repo_id=repo_id,
+                        repo_type="dataset",
+                    )
 
-        prog(0.7, "Preparing uploads")
-        dedup = Deduplicator(api=api, repo_id=repo_id)
-        session = SessionManager()
-        uploader = BatchUploader(api=api, repo_id=repo_id, deduplicator=dedup, session=session, max_workers=workers)
+            _check_cancel()
+            _progress(0.65, "Preparing uploads")
+            dedup = Deduplicator(api=api, repo_id=repo_id)
+            session = SessionManager()
+            uploader = BatchUploader(api=api, repo_id=repo_id, deduplicator=dedup, session=session, max_workers=workers)
 
-        file_infos = []
-        for species, items in summary.get("by_species", {}).items():
-            for it in items:
-                file_infos.append({"full_path": it["full_path"], "relative_path": it["relative_path"], "size": it.get("size", 0)})
+            file_infos: list[dict[str, Any]] = []
+            for species_items in summary.get("by_species", {}).values():
+                file_infos.extend(species_items)
 
-        def on_progress(state: dict):
-            uploaded = state.get("uploaded", 0)
-            total = len(file_infos)
-            prog(0.7 + (0.25 * uploaded / max(total, 1)), f"Uploading: {uploaded}/{total}")
+            uploaded_total = 0
+            skipped_total = 0
+            failed_total = 0
 
-        prog(0.7, "Starting uploads")
-        result = uploader.upload_files(file_infos, remote_base=remote_base or "audio", on_progress=on_progress)
+            def on_progress(state: dict[str, Any]) -> None:
+                nonlocal uploaded_total, skipped_total, failed_total
+                uploaded_total = int(state.get("uploaded", uploaded_total))
+                skipped_total = int(state.get("skipped", skipped_total))
+                failed_total = int(state.get("failed", failed_total))
+                completed = uploaded_total + skipped_total + failed_total
+                total = max(len(file_infos), 1)
+                _progress(
+                    0.65 + (0.34 * completed / total),
+                    f"Upload progress: uploaded {uploaded_total}, skipped {skipped_total}, failed {failed_total}",
+                )
 
-        prog(0.95, "Finalizing")
-        return result
+            _check_cancel()
+            _progress(0.66, f"Uploading {len(file_infos)} audio file(s)")
+            result = uploader.upload_files(
+                file_infos,
+                remote_base="audio",
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+                log_callback=log_callback,
+            )
+
+            _check_cancel()
+            _progress(1.0, "Upload finished")
+            result.setdefault("uploaded", uploaded_total)
+            result.setdefault("skipped", skipped_total)
+            result.setdefault("failed", failed_total)
+            return result
     finally:
         try:
-            shutil.rmtree(tmpdir)
+            shutil.rmtree(staging_root)
         except Exception:
             pass
