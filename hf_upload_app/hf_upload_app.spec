@@ -6,11 +6,11 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = []
 
 a = Analysis(
-    ["app_native.py"],
+    ["app.py"],
     pathex=["."],
     binaries=[],
     datas=datas,
-    hiddenimports=["tkinter"],
+    hiddenimports=["tkinter", "native_ui", "uploader.main"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -33,7 +33,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

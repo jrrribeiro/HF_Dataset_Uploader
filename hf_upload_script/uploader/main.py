@@ -264,13 +264,22 @@ def upload_cmd(
                         try:
                             connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
                             read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
-                            api.upload_file(
-                                path_or_fileobj=path_or_fileobj,
-                                path_in_repo=path_in_repo,
-                                repo_id=repo_id,
-                                repo_type="dataset",
-                                timeout=(connect_timeout, read_timeout),
-                            )
+                            try:
+                                api.upload_file(
+                                    path_or_fileobj=path_or_fileobj,
+                                    path_in_repo=path_in_repo,
+                                    repo_id=repo_id,
+                                    repo_type="dataset",
+                                    timeout=(connect_timeout, read_timeout),
+                                )
+                            except TypeError:
+                                # Some hf_hub versions don't accept a `timeout` kwarg; fall back
+                                api.upload_file(
+                                    path_or_fileobj=path_or_fileobj,
+                                    path_in_repo=path_in_repo,
+                                    repo_id=repo_id,
+                                    repo_type="dataset",
+                                )
                         except Exception as exc:  # pragma: no cover - network behavior
                             result["exc"] = exc
 
@@ -314,8 +323,12 @@ def upload_cmd(
                                 "folder_path": folder_path,
                                 "repo_id": repo_id,
                                 "repo_type": "dataset",
-                                "timeout": (connect_timeout, read_timeout),
                             }
+                            # Try passing timeout if supported by this hf_hub version
+                            try:
+                                api.upload_folder(**{**kwargs, **{"timeout": (connect_timeout, read_timeout)}})
+                            except TypeError:
+                                api.upload_folder(**kwargs)
                             if path_in_repo:
                                 kwargs["path_in_repo"] = path_in_repo
                             api.upload_folder(**kwargs)

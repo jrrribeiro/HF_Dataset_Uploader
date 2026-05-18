@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import logging
 import shutil
 import tarfile
@@ -223,15 +224,58 @@ def perform_upload(
             _check_cancel()
             _progress(0.52, "Building manifest")
             manifest = build_manifest_from_scan(repo_id, summary, csv_stats=csv_stats)
-            connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
-            read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
-            api.upload_file(
-                path_or_fileobj=manifest_to_bytes(manifest),
-                path_in_repo="index/manifest.json",
-                repo_id=repo_id,
-                repo_type="dataset",
-                timeout=(connect_timeout, read_timeout),
-            )
+
+            def _upload_with_retry(path_or_fileobj: Any, path_in_repo: str) -> None:
+                max_attempts = int(os.getenv("BNU_HUB_UPLOAD_ATTEMPTS", "3"))
+                timeout_s = float(os.getenv("BNU_HUB_UPLOAD_TIMEOUT", "90"))
+                base_backoff = float(os.getenv("BNU_HUB_UPLOAD_BACKOFF", "1.0"))
+                last_exc: Exception | None = None
+
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        result: dict[str, Any] = {"exc": None}
+
+                        def _target() -> None:
+                            try:
+                                connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
+                                read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
+                                try:
+                                    api.upload_file(
+                                        path_or_fileobj=path_or_fileobj,
+                                        path_in_repo=path_in_repo,
+                                        repo_id=repo_id,
+                                        repo_type="dataset",
+                                        timeout=(connect_timeout, read_timeout),
+                                    )
+                                except TypeError:
+                                    api.upload_file(
+                                        path_or_fileobj=path_or_fileobj,
+                                        path_in_repo=path_in_repo,
+                                        repo_id=repo_id,
+                                        repo_type="dataset",
+                                    )
+                            except Exception as exc:  # pragma: no cover - network behavior
+                                result["exc"] = exc
+
+                        t = threading.Thread(target=_target, daemon=True)
+                        t.start()
+                        t.join(timeout_s)
+                        if t.is_alive():
+                            raise TimeoutError(f"upload_file timed out after {timeout_s}s")
+                        if result["exc"] is not None:
+                            raise result["exc"]
+                        return
+                    except Exception as exc:  # pragma: no cover - network behavior
+                        last_exc = exc
+                        if attempt >= max_attempts:
+                            break
+                        wait_s = base_backoff * (2 ** (attempt - 1))
+                        logging.getLogger(__name__).info("upload_file failed for %s: %s. Retrying in %.1fs", path_in_repo, exc, wait_s)
+                        time.sleep(wait_s)
+
+                raise RuntimeError(f"Upload failed for {path_in_repo}: {last_exc}")
+
+            _upload_with_retry(manifest_to_bytes(manifest), "index/manifest.json")
 
             if csv_path:
                 _check_cancel()
@@ -249,15 +293,7 @@ def perform_upload(
                 for idx, shard_path in enumerate(shards, start=1):
                     _check_cancel()
                     _progress(0.58 + (0.07 * (idx / total_shards)), f"Uploading shard {idx}/{total_shards}: {shard_path.name}")
-                    connect_timeout = float(os.getenv("BNU_HUB_CONNECT_TIMEOUT", "8"))
-                    read_timeout = float(os.getenv("BNU_HUB_READ_TIMEOUT", "30"))
-                    api.upload_file(
-                        path_or_fileobj=str(shard_path),
-                        path_in_repo=f"index/shards/{shard_path.name}",
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                        timeout=(connect_timeout, read_timeout),
-                    )
+                    _upload_with_retry(str(shard_path), f"index/shards/{shard_path.name}")
 
             _check_cancel()
             _progress(0.65, "Preparing uploads")
