@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+import re
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
@@ -81,7 +82,7 @@ class NativeUI(tk.Tk):
         progress_panel = ttk.Frame(container)
         progress_panel.grid(row=3, column=0, sticky="nsew", pady=(12, 10))
         progress_panel.columnconfigure(0, weight=1)
-        progress_panel.rowconfigure(2, weight=1)
+        progress_panel.rowconfigure(3, weight=1)
 
         status_row = ttk.Frame(progress_panel)
         status_row.grid(row=0, column=0, sticky="ew")
@@ -91,13 +92,15 @@ class NativeUI(tk.Tk):
         ttk.Label(status_row, textvariable=self.status_var).grid(row=0, column=0, sticky=tk.W)
         self.percent_var = tk.StringVar(value="0%")
         ttk.Label(status_row, textvariable=self.percent_var).grid(row=0, column=1, sticky=tk.E)
+        self.counters_var = tk.StringVar(value="Uploaded: 0 | Skipped: 0 | Failed: 0")
+        ttk.Label(progress_panel, textvariable=self.counters_var, foreground="#555").grid(row=2, column=0, sticky="w", pady=(0, 6))
 
         self.progress_var = tk.DoubleVar(value=0.0)
         self.progress_bar = ttk.Progressbar(progress_panel, variable=self.progress_var, maximum=100.0)
-        self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(6, 10))
+        self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(6, 8))
 
         log_frame = ttk.LabelFrame(progress_panel, text="Log", padding=10)
-        log_frame.grid(row=2, column=0, sticky="nsew")
+        log_frame.grid(row=3, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
@@ -189,6 +192,11 @@ class NativeUI(tk.Tk):
         self.progress_var.set(clamped)
         self.percent_var.set(f"{clamped:.0f}%")
         self.status_var.set(message)
+        match = re.search(r"uploaded\s+(\d+),\s+skipped\s+(\d+),\s+failed\s+(\d+)", message, flags=re.IGNORECASE)
+        if match:
+            self.counters_var.set(
+                f"Uploaded: {match.group(1)} | Skipped: {match.group(2)} | Failed: {match.group(3)}"
+            )
 
     def _set_running(self, running: bool) -> None:
         self.worker_running = running
@@ -228,6 +236,7 @@ class NativeUI(tk.Tk):
         self.progress_var.set(0.0)
         self.percent_var.set("0%")
         self.status_var.set("Starting upload...")
+        self.counters_var.set("Uploaded: 0 | Skipped: 0 | Failed: 0")
         self._set_running(True)
         self.log(f"Starting upload for {repo}")
         self.log(f"Inputs: {len(self.selected_inputs)} item(s)")

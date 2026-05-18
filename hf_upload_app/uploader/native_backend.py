@@ -15,7 +15,7 @@ from huggingface_hub import HfApi
 
 from .batch_uploader import BatchUploader
 from .deduplicator import Deduplicator
-from .manifest import build_manifest_from_scan, manifest_to_bytes, write_shards_from_csv_rows
+from .manifest import build_manifest_from_scan, manifest_to_bytes, summarize_csv_rows, write_shards_from_csv_rows
 from .repo_service import RepositoryService
 from .scanner import LocalScanner
 from .session_manager import SessionManager
@@ -213,16 +213,16 @@ def perform_upload(
             summary = _merge_scan_summaries(scan_summaries)
             _progress(0.45, f"Found {summary['total_files']} audio files")
 
-            csv_rows = None
+            csv_stats = None
             if csv_path:
                 _check_cancel()
-                _progress(0.48, "Reading CSV")
+                _progress(0.48, "Summarizing CSV")
                 with open(csv_path, newline="", encoding="utf-8") as fh:
-                    csv_rows = list(csv.DictReader(fh))
+                    csv_stats = summarize_csv_rows(csv.DictReader(fh))
 
             _check_cancel()
             _progress(0.52, "Building manifest")
-            manifest = build_manifest_from_scan(repo_id, summary, csv_rows=csv_rows)
+            manifest = build_manifest_from_scan(repo_id, summary, csv_stats=csv_stats)
             api.upload_file(
                 path_or_fileobj=manifest_to_bytes(manifest),
                 path_in_repo="index/manifest.json",
@@ -230,12 +230,22 @@ def perform_upload(
                 repo_type="dataset",
             )
 
-            if csv_rows:
+            if csv_path:
                 _check_cancel()
                 _progress(0.58, "Creating CSV shards")
-                shards = write_shards_from_csv_rows(csv_rows)
-                for shard_path in shards:
+                def _on_shard_generated(count: int) -> None:
+                    _progress(0.58, f"Creating CSV shards ({count} ready)")
+
+                with open(csv_path, newline="", encoding="utf-8") as fh:
+                    shards = write_shards_from_csv_rows(
+                        csv.DictReader(fh),
+                        on_progress=_on_shard_generated,
+                        cancel_event=cancel_event,
+                    )
+                total_shards = max(len(shards), 1)
+                for idx, shard_path in enumerate(shards, start=1):
                     _check_cancel()
+                    _progress(0.58 + (0.07 * (idx / total_shards)), f"Uploading shard {idx}/{total_shards}: {shard_path.name}")
                     api.upload_file(
                         path_or_fileobj=str(shard_path),
                         path_in_repo=f"index/shards/{shard_path.name}",

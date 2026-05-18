@@ -77,7 +77,13 @@ def manifest_to_bytes(manifest: dict[str, Any]) -> bytes:
     return json.dumps(manifest, ensure_ascii=True, indent=2).encode("utf-8")
 
 
-def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: int = INDEX_SHARD_SIZE) -> list[Path]:
+def write_shards_from_csv_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    shard_size: int = INDEX_SHARD_SIZE,
+    on_progress: Any | None = None,
+    cancel_event: Any | None = None,
+) -> list[Path]:
     rows_iter = iter(rows)
     first_row = next(rows_iter, None)
     if first_row is None:
@@ -90,6 +96,8 @@ def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: in
         buffered_rows = [first_row]
         shard_index = 0
         while buffered_rows:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise RuntimeError("Upload cancelled")
             remaining = shard_size - len(buffered_rows)
             if remaining > 0:
                 buffered_rows.extend(islice(rows_iter, remaining))
@@ -107,6 +115,11 @@ def write_shards_from_csv_rows(rows: Iterable[dict[str, Any]], *, shard_size: in
                         fh.write(json.dumps(r, ensure_ascii=True) + "\n")
 
             out_paths.append(shard_path)
+            if on_progress:
+                try:
+                    on_progress(shard_index + 1)
+                except Exception:
+                    pass
             shard_index += 1
             buffered_rows = list(islice(rows_iter, shard_size))
 

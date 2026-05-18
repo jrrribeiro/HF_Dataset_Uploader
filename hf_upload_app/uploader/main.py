@@ -474,7 +474,7 @@ def upload_cmd(
             import csv
 
             with open(csv_file, newline="", encoding="utf-8") as fh:
-            csv_stats = summarize_csv_rows(csv.DictReader(fh))
+                csv_stats = summarize_csv_rows(csv.DictReader(fh))
 
         manifest = build_manifest_from_scan(repo_id, summary, csv_stats=csv_stats)
         _upload_with_retry(manifest_to_bytes(manifest), "index/manifest.json")
