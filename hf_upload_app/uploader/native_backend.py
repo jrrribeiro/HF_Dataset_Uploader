@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import time
 import logging
 import shutil
 import tarfile
@@ -133,6 +134,14 @@ def perform_upload(
         if progress_callback:
             progress_callback(max(0.0, min(1.0, value)), message)
 
+    def _sleep_with_cancel(seconds: float) -> None:
+        if seconds <= 0:
+            return
+        if cancel_event is not None and hasattr(cancel_event, "wait"):
+            cancel_event.wait(seconds)
+        else:
+            time.sleep(seconds)
+
     if not token or not repo_id:
         raise ValueError("token and repo_id are required")
 
@@ -232,6 +241,7 @@ def perform_upload(
                 last_exc: Exception | None = None
 
                 for attempt in range(1, max_attempts + 1):
+                    _check_cancel()
                     try:
                         result: dict[str, Any] = {"exc": None}
 
@@ -259,7 +269,12 @@ def perform_upload(
 
                         t = threading.Thread(target=_target, daemon=True)
                         t.start()
-                        t.join(timeout_s)
+                        waited = 0.0
+                        poll_s = min(0.25, max(0.05, timeout_s / 40.0))
+                        while t.is_alive() and waited < timeout_s:
+                            _check_cancel()
+                            t.join(min(poll_s, timeout_s - waited))
+                            waited += poll_s
                         if t.is_alive():
                             raise TimeoutError(f"upload_file timed out after {timeout_s}s")
                         if result["exc"] is not None:
@@ -271,7 +286,7 @@ def perform_upload(
                             break
                         wait_s = base_backoff * (2 ** (attempt - 1))
                         logging.getLogger(__name__).info("upload_file failed for %s: %s. Retrying in %.1fs", path_in_repo, exc, wait_s)
-                        time.sleep(wait_s)
+                        _sleep_with_cancel(wait_s)
 
                 raise RuntimeError(f"Upload failed for {path_in_repo}: {last_exc}")
 

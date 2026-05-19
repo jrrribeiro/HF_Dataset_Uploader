@@ -55,7 +55,13 @@ class BatchUploader:
         self.upload_file_timeout = float(os.getenv("BNU_UPLOAD_FILE_TIMEOUT", "90"))
 
     @staticmethod
-    def _run_with_timeout(func: Callable[..., Any], timeout_s: float, *args: Any, **kwargs: Any) -> Any:
+    def _run_with_timeout(
+        func: Callable[..., Any],
+        timeout_s: float,
+        *args: Any,
+        cancel_event: Any | None = None,
+        **kwargs: Any,
+    ) -> Any:
         result: dict[str, Any] = {"value": None, "exc": None}
 
         def _target() -> None:
@@ -66,12 +72,27 @@ class BatchUploader:
 
         t = threading.Thread(target=_target, daemon=True)
         t.start()
-        t.join(timeout_s)
+        waited = 0.0
+        poll_s = min(0.25, max(0.05, timeout_s / 40.0))
+        while t.is_alive() and waited < timeout_s:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise RuntimeError("Upload cancelled")
+            t.join(min(poll_s, timeout_s - waited))
+            waited += poll_s
         if t.is_alive():
             raise TimeoutError(f"Operation timed out after {timeout_s}s")
         if result["exc"] is not None:
             raise result["exc"]
         return result["value"]
+
+    @staticmethod
+    def _sleep_with_cancel(seconds: float, cancel_event: Any | None) -> None:
+        if seconds <= 0:
+            return
+        if cancel_event is not None and hasattr(cancel_event, "wait"):
+            cancel_event.wait(seconds)
+        else:
+            time.sleep(seconds)
 
     def _upload_file_with_retry(self, local_path: str | Path, remote_path: str) -> None:
         attempts = 0
@@ -84,6 +105,7 @@ class BatchUploader:
                 self._run_with_timeout(
                     self._api.upload_file,
                     self.upload_file_timeout,
+                    cancel_event=cancel_event,
                     path_or_fileobj=str(local_path),
                     path_in_repo=remote_path,
                     repo_id=self.repo_id,
@@ -102,7 +124,7 @@ class BatchUploader:
                     raise
                 backoff = self.initial_backoff * (2 ** (attempts - 1))
                 logger.info("Backing off %.1fs before retry", backoff)
-                time.sleep(backoff)
+                self._sleep_with_cancel(backoff, cancel_event)
 
     def upload_files(
         self,
@@ -202,8 +224,9 @@ class BatchUploader:
                         self._run_with_timeout(
                             self._api.upload_folder,
                             self.folder_upload_timeout,
-                            local_dir,
-                            remote_parent,
+                            cancel_event=cancel_event,
+                            folder_path=local_dir,
+                            path_in_repo=remote_parent,
                             repo_id=self.repo_id,
                             repo_type="dataset",
                         )
@@ -231,7 +254,7 @@ class BatchUploader:
                             break
                         backoff = self.initial_backoff * (2 ** (attempts - 1))
                         logger.info("Backing off %.1fs before retrying upload_folder", backoff)
-                        time.sleep(backoff)
+                        self._sleep_with_cancel(backoff, cancel_event)
             else:
                 remaining_tasks.extend(items)
 
@@ -281,7 +304,7 @@ class BatchUploader:
             for full_path, remote_path, size in failed_tasks:
                 _check_cancel()
                 try:
-                    time.sleep(seq_retry_backoff)
+                    self._sleep_with_cancel(seq_retry_backoff, cancel_event)
                     self._upload_file_with_retry(full_path, remote_path)
                     try:
                         self.deduplicator.mark_uploaded(remote_path)
