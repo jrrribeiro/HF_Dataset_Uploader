@@ -268,6 +268,8 @@ def materialize_staging_folder(
                     "files": len(upload_rows),
                     "bytes": total_bytes,
                     "total": len(all_rows),
+                    "linked_files": linked,
+                    "copied_files": copied,
                 }
             )
 

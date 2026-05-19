@@ -345,7 +345,15 @@ def upload_cmd(
             def on_staging(state: dict[str, Any]) -> None:
                 staging_state.update(state)
                 completed = int(state.get("files", state.get("upload_files", 0)))
-                progress.update(staging_task, completed=min(completed, upload_count), total=upload_count)
+                linked = int(state.get("linked_files", 0))
+                copied = int(state.get("copied_files", 0))
+                description = f"Building upload staging folder (linked {linked}, copied {copied})"
+                progress.update(
+                    staging_task,
+                    completed=min(completed, upload_count),
+                    total=upload_count,
+                    description=description,
+                )
 
             staging_summary = materialize_staging_folder(
                 plan,
@@ -382,6 +390,8 @@ def upload_cmd(
         click.echo(f"Uploaded:  {staging_summary['upload_files']} files")
         click.echo(f"Skipped:   {staging_summary['skipped_files']} files")
         click.echo(f"Indexed:   {staging_summary['total_files']} files")
+        click.echo(f"Linked:    {staging_summary['linked_files']} files")
+        click.echo(f"Copied:    {staging_summary['copied_files']} files")
         click.echo(f"Time:      {elapsed} seconds")
         click.echo("=" * 60)
         return
