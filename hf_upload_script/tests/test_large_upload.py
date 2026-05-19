@@ -6,6 +6,7 @@ import pandas as pd
 
 from uploader.large_upload import (
     build_upload_plan,
+    ensure_dataset_repo,
     load_remote_paths,
     materialize_staging_folder,
     scan_local_inventory,
@@ -106,6 +107,18 @@ def test_materialize_staging_folder_removes_stale_payload_but_keeps_cache(tmp_pa
     assert (staging / plan[0].stored_path).exists()
 
 
+def test_materialize_staging_folder_allows_hf_staging_anchor(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_audio(source / "Species one" / "a.wav", b"a")
+    plan = build_upload_plan(scan_local_inventory(source), set())
+    staging = tmp_path / "hf_staging" / "dataset-name"
+
+    summary = materialize_staging_folder(plan, staging, repo_id="owner/repo")
+
+    assert summary["upload_files"] == 1
+    assert (staging / plan[0].stored_path).exists()
+
+
 class FakeApi:
     def __init__(self) -> None:
         self.created: list[dict] = []
@@ -114,11 +127,31 @@ class FakeApi:
     def create_repo(self, **kwargs):
         self.created.append(kwargs)
 
+    def repo_info(self, **kwargs):
+        return {"id": kwargs["repo_id"]}
+
     def upload_large_folder(self, **kwargs):
         self.uploaded.append(kwargs)
 
     def list_repo_files(self, **kwargs):
         return ["audio/existing.wav", "index/files.parquet"]
+
+
+class FlakyListApi(FakeApi):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def list_repo_files(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("temporary timeout")
+        return ["audio/recovered.wav"]
+
+
+class MissingRepoApi(FakeApi):
+    def repo_info(self, **kwargs):
+        raise RuntimeError("404 repository not found")
 
 
 def test_load_remote_paths_calls_hub_once() -> None:
@@ -127,6 +160,46 @@ def test_load_remote_paths_calls_hub_once() -> None:
     paths = load_remote_paths(api, "owner/repo")
 
     assert paths == {"audio/existing.wav", "index/files.parquet"}
+
+
+def test_load_remote_paths_retries_transient_failures() -> None:
+    api = FlakyListApi()
+
+    paths = load_remote_paths(api, "owner/repo", max_attempts=2, backoff_seconds=0)
+
+    assert paths == {"audio/recovered.wav"}
+    assert api.calls == 2
+
+
+def test_ensure_dataset_repo_reports_existing_repo() -> None:
+    api = FakeApi()
+
+    state = ensure_dataset_repo(api, "owner/repo")
+
+    assert state["created"] is False
+    assert api.created == []
+
+
+def test_ensure_dataset_repo_creates_missing_repo_public() -> None:
+    api = MissingRepoApi()
+
+    state = ensure_dataset_repo(api, "owner/repo", private=False)
+
+    assert state["created"] is True
+    assert api.created == [
+        {"repo_id": "owner/repo", "repo_type": "dataset", "private": False, "exist_ok": False}
+    ]
+
+
+def test_ensure_dataset_repo_can_refuse_creation() -> None:
+    api = MissingRepoApi()
+
+    try:
+        ensure_dataset_repo(api, "owner/repo", create_repo=False)
+    except RuntimeError as exc:
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("expected missing repo error")
 
 
 def test_upload_large_staging_folder_uses_single_large_folder_call(tmp_path: Path) -> None:

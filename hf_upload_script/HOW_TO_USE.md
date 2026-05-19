@@ -132,7 +132,8 @@ python app.py upload `
   --repo-id jrrribeiro/upload_test1 `
   --segments C:\Users\jonat\Downloads\Segments `
   --csv C:\Users\jonat\Downloads\DETECTIONS.csv `
-  --workers 8
+  --workers 8 `
+  --private
 ```
 
 Linux/macOS example:
@@ -197,6 +198,48 @@ python app.py upload `
 ```
 
 `direct` is accepted as a backwards-compatible alias for `large-folder`.
+
+---
+
+## Repository Creation
+
+By default, the upload command creates the Hugging Face dataset repository if it
+does not exist:
+
+```text
+--create-repo
+```
+
+Choose visibility when creating the dataset:
+
+```powershell
+python app.py upload `
+  --repo-id owner/dataset-name `
+  --segments C:\path\to\Segments `
+  --private
+```
+
+or:
+
+```powershell
+python app.py upload `
+  --repo-id owner/dataset-name `
+  --segments C:\path\to\Segments `
+  --public
+```
+
+If you want the command to fail when the repository does not already exist:
+
+```powershell
+python app.py upload `
+  --repo-id owner/dataset-name `
+  --segments C:\path\to\Segments `
+  --no-create-repo
+```
+
+When the script creates a new repository during the current run, it knows the
+dataset is empty. If the remote index listing times out immediately afterward,
+it can safely continue with an empty remote index.
 
 ---
 
@@ -409,10 +452,13 @@ python app.py upload `
 | `--token` | None | Hugging Face token. Usually prefer `HF_TOKEN`. |
 | `--remote-base` | `audio` | Base folder inside the dataset for staged audio. |
 | `--workers` | Hub default | Parallel workers for `upload_large_folder`. |
+| `--create-repo / --no-create-repo` | `--create-repo` | Create the dataset repo if needed. |
+| `--private / --public` | `--private` | Visibility when creating the dataset repo. |
 | `--upload-mode` | `large-folder` | Main mode. `legacy` keeps the old flow. |
 | `--staging-dir` | Temp folder | Local staging location. |
 | `--max-files-per-folder` | `9000` | Max files per staged shard folder. |
 | `--staging-mode` | `hardlink` | Use `hardlink` or `copy`. |
+| `--first-upload` | Off | Treat the dataset as empty if remote listing times out. |
 | `--dry-run` | Off | Show plan without upload. |
 | `--verbose` | Off | Show detailed Hugging Face logs and file progress. |
 
@@ -494,6 +540,23 @@ python app.py upload `
 Re-run the same command. The large-folder mode keeps upload metadata and should
 resume work instead of starting from zero.
 
+If the timeout happens while loading the remote repository index and the script
+created the repository in this same run, it will continue automatically.
+
+If the repository already existed but you know this is the first upload and it is
+empty, use:
+
+```powershell
+python app.py upload `
+  --repo-id owner/dataset-name `
+  --segments C:\path\to\Segments `
+  --first-upload
+```
+
+Do not use `--first-upload` for datasets that may already contain files you want
+to skip, because the script will assume nothing is present remotely if listing
+times out.
+
 ### I Want The Old Behavior
 
 Use:
@@ -548,4 +611,3 @@ Expected result:
 ```text
 Plan <new>/<total> files to upload, <existing> already present
 ```
-

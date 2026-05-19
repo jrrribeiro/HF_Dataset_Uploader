@@ -100,19 +100,75 @@ def load_remote_paths(
     repo_id: str,
     *,
     repo_type: str = "dataset",
+    max_attempts: int = 3,
+    backoff_seconds: float = 2.0,
     on_progress: ProgressCallback | None = None,
 ) -> set[str]:
     """Load remote repository paths with a single Hub listing call."""
     started_at = time.time()
-    if on_progress:
-        on_progress({"phase": "remote", "status": "listing"})
-    try:
-        paths = set(str(path) for path in api.list_repo_files(repo_id=repo_id, repo_type=repo_type))
-    except Exception:
-        raise
+    last_exc: Exception | None = None
+    attempts = max(1, int(max_attempts))
+    for attempt in range(1, attempts + 1):
+        if on_progress:
+            on_progress({"phase": "remote", "status": "listing", "attempt": attempt, "max_attempts": attempts})
+        try:
+            paths = set(str(path) for path in api.list_repo_files(repo_id=repo_id, repo_type=repo_type))
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                raise
+            if on_progress:
+                on_progress({"phase": "remote", "status": "retrying", "attempt": attempt, "error": str(exc)})
+            time.sleep(backoff_seconds * (2 ** (attempt - 1)))
+    else:
+        raise last_exc or RuntimeError("Could not list remote repository files")
     if on_progress:
         on_progress({"phase": "remote", "files": len(paths), "elapsed": time.time() - started_at, "done": True})
     return paths
+
+
+def ensure_dataset_repo(
+    api: Any,
+    repo_id: str,
+    *,
+    private: bool = True,
+    create_repo: bool = True,
+    max_attempts: int = 3,
+    backoff_seconds: float = 2.0,
+) -> dict[str, Any]:
+    """Ensure a dataset repository exists and report whether this run created it."""
+    attempts = max(1, int(max_attempts))
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            api.repo_info(repo_id=repo_id, repo_type="dataset", timeout=20)
+            return {"repo_id": repo_id, "exists": True, "created": False}
+        except Exception as exc:
+            last_exc = exc
+            if not _looks_like_missing_repo(exc):
+                if attempt < attempts:
+                    time.sleep(backoff_seconds * (2 ** (attempt - 1)))
+                    continue
+                if not create_repo:
+                    raise
+                break
+
+            if not create_repo:
+                raise RuntimeError(
+                    f"Dataset repository does not exist: {repo_id}. "
+                    "Rerun with repository creation enabled."
+                ) from exc
+
+            api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=False)
+            return {"repo_id": repo_id, "exists": True, "created": True}
+
+    if not create_repo:
+        raise last_exc or RuntimeError(f"Could not access dataset repository: {repo_id}")
+
+    api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+    return {"repo_id": repo_id, "exists": True, "created": False, "repo_info_error": str(last_exc or "")}
 
 
 def build_upload_plan(
@@ -315,7 +371,8 @@ def _place_file(source: Path, destination: Path, *, mode: str) -> None:
 def _clean_staging_payload(staging_path: Path) -> None:
     protected = {".cache"}
     anchor_parts = {part.lower() for part in staging_path.parts}
-    if "hf-dataset-uploader" not in anchor_parts and staging_path.name.lower() != "staging":
+    allowed_anchor = bool(anchor_parts.intersection({"hf-dataset-uploader", "hf_staging", "hf-staging"}))
+    if not allowed_anchor and staging_path.name.lower() != "staging":
         raise RuntimeError(f"Refusing to clean unexpected staging path: {staging_path}")
 
     for child in staging_path.iterdir():
@@ -325,6 +382,11 @@ def _clean_staging_payload(staging_path: Path) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+def _looks_like_missing_repo(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "404" in message or "not found" in message or "repository not found" in message
 
 
 def _write_index(path: Path, rows: list[dict[str, Any]]) -> None:

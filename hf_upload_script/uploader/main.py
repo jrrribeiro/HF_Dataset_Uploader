@@ -26,6 +26,7 @@ from .scanner import LocalScanner
 from .session_manager import SessionManager
 from .large_upload import (
     build_upload_plan,
+    ensure_dataset_repo,
     load_remote_paths,
     materialize_staging_folder,
     scan_local_inventory,
@@ -131,6 +132,8 @@ def resume_cmd(session_id: str) -> None:
 @click.option("--remote-base", default="audio", show_default=True, help="Remote base path inside the dataset")
 @click.option("--batch-size", default=None, type=int, help="Override batch size for uploads")
 @click.option("--workers", default=None, type=int, help="Number of parallel upload workers")
+@click.option("--create-repo/--no-create-repo", default=True, show_default=True, help="Create the Hugging Face dataset repository if it does not exist")
+@click.option("--private/--public", "private_repo", default=True, show_default=True, help="Repository visibility when creating a dataset")
 @click.option(
     "--upload-mode",
     type=click.Choice(["large-folder", "direct", "legacy"], case_sensitive=False),
@@ -147,6 +150,18 @@ def resume_cmd(session_id: str) -> None:
     show_default=True,
     help="Use hardlinks when possible to avoid duplicating audio bytes",
 )
+@click.option(
+    "--first-upload",
+    is_flag=True,
+    default=False,
+    help="Treat the dataset as empty if the remote index listing times out.",
+)
+@click.option(
+    "--assume-empty-remote-on-index-failure",
+    is_flag=True,
+    default=False,
+    hidden=True,
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Scan and report what would be uploaded, do not perform uploads")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show detailed logging for debugging")
 @handle_cli_errors
@@ -159,10 +174,14 @@ def upload_cmd(
     remote_base: str,
     batch_size: int | None,
     workers: int | None,
+    create_repo: bool,
+    private_repo: bool,
     upload_mode: str,
     staging_dir: str | None,
     max_files_per_folder: int,
     staging_mode: str,
+    first_upload: bool,
+    assume_empty_remote_on_index_failure: bool,
     dry_run: bool,
     verbose: bool,
 ):
@@ -239,6 +258,23 @@ def upload_cmd(
                 except Exception as exc:  # pragma: no cover - external
                     raise click.ClickException(build_error_message(exc)) from exc
 
+                try:
+                    repo_state = ensure_dataset_repo(
+                        api,
+                        repo_id,
+                        private=private_repo,
+                        create_repo=create_repo,
+                        max_attempts=int(os.getenv("BNU_REPO_ENSURE_ATTEMPTS", "3")),
+                        backoff_seconds=float(os.getenv("BNU_REPO_ENSURE_BACKOFF", "2.0")),
+                    )
+                except Exception as exc:
+                    raise click.ClickException(f"Could not create or access dataset repository: {exc}") from exc
+                if repo_state.get("created"):
+                    console.print(
+                        f"[green]Created[/green] dataset repository {repo_id} "
+                        f"({'private' if private_repo else 'public'})"
+                    )
+
                 remote_task = progress.add_task("Loading remote repository index", total=None)
 
                 def on_remote(state: dict[str, Any]) -> None:
@@ -247,15 +283,31 @@ def upload_cmd(
                         progress.update(remote_task, total=int(state.get("files", 0)), completed=int(state.get("files", 0)))
 
                 try:
-                    remote_paths = load_remote_paths(api, repo_id, on_progress=on_remote)
+                    remote_paths = load_remote_paths(
+                        api,
+                        repo_id,
+                        max_attempts=int(os.getenv("BNU_REMOTE_INDEX_ATTEMPTS", "3")),
+                        backoff_seconds=float(os.getenv("BNU_REMOTE_INDEX_BACKOFF", "2.0")),
+                        on_progress=on_remote,
+                    )
                 except Exception as exc:
                     msg = str(exc).lower()
                     if "404" in msg or "not found" in msg:
-                        api.create_repo(repo_id=repo_id, repo_type="dataset", private=True, exist_ok=True)
                         remote_paths = set()
                         progress.update(remote_task, total=0, completed=0)
+                    elif repo_state.get("created") or first_upload or assume_empty_remote_on_index_failure:
+                        remote_paths = set()
+                        progress.update(remote_task, total=0, completed=0)
+                        console.print(
+                            "[yellow]Warning:[/yellow] remote index listing failed; "
+                            "continuing as if the dataset were empty."
+                        )
                     else:
-                        raise click.ClickException(f"Could not list remote dataset files: {exc}") from exc
+                        raise click.ClickException(
+                            f"Could not list remote dataset files after retries: {exc}\n\n"
+                            "If this is the first upload to an empty dataset, rerun with --first-upload. "
+                            "For existing datasets, retry without this flag so already uploaded files can be skipped."
+                        ) from exc
 
             plan = build_upload_plan(
                 records,
@@ -313,7 +365,7 @@ def upload_cmd(
                 repo_id=repo_id,
                 staging_dir=staging_summary["staging_dir"],
                 workers=workers,
-                private=True,
+                private=private_repo,
                 print_report_every=int(os.getenv("BNU_UPLOAD_REPORT_EVERY", "30")),
                 disable_file_progress=not verbose,
                 quiet_hf_logs=not verbose,
@@ -383,7 +435,7 @@ def upload_cmd(
         last_create_exc: Exception | None = None
         for attempt in range(1, create_attempts + 1):
             try:
-                api.create_repo(repo_id=repo_id, repo_type="dataset", private=True, exist_ok=True)
+                api.create_repo(repo_id=repo_id, repo_type="dataset", private=private_repo, exist_ok=True)
                 click.echo("[OK] Dataset repository ready for direct folder upload")
                 last_create_exc = None
                 break
@@ -591,7 +643,7 @@ def upload_cmd(
         if not validation.get("is_valid"):
             click.echo("[WARN] Dataset structure incomplete. Attempting to initialize...")
             try:
-                repo_service.create_dataset(repo_id, private=True)
+                repo_service.create_dataset(repo_id, private=private_repo)
                 click.echo("[OK] Dataset structure created successfully!")
             except Exception as exc:
                 raise click.ClickException(
@@ -614,7 +666,7 @@ def upload_cmd(
         if "404" in error_msg or "repository not found" in error_msg_lower or "not found" in error_msg_lower:
             click.echo(f"[WARN] Dataset '{repo_id}' not found. Creating...")
             try:
-                repo_service.create_dataset(repo_id, private=True)
+                repo_service.create_dataset(repo_id, private=private_repo)
                 click.echo("[OK] Dataset created and initialized successfully!")
             except Exception as create_exc:
                 raise click.ClickException(
