@@ -1,5 +1,6 @@
 gradio==5.23.1
-huggingface_hub==0.28.1
+huggingface_hub>=0.32.0
+hf_xet>=1.0.0
 numpy>=2.0.0
 pandas>=2.2.0
 Pillow>=10.4.0

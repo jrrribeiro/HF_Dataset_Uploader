@@ -4,6 +4,7 @@ import os
 import json
 import time
 import threading
+import tempfile
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +24,13 @@ from .error_handler import build_error_message
 from .repo_service import RepositoryService
 from .scanner import LocalScanner
 from .session_manager import SessionManager
+from .large_upload import (
+    build_upload_plan,
+    load_remote_paths,
+    materialize_staging_folder,
+    scan_local_inventory,
+    upload_large_staging_folder,
+)
 
 
 def handle_cli_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -125,10 +133,19 @@ def resume_cmd(session_id: str) -> None:
 @click.option("--workers", default=None, type=int, help="Number of parallel upload workers")
 @click.option(
     "--upload-mode",
-    type=click.Choice(["direct", "legacy"], case_sensitive=False),
-    default="direct",
+    type=click.Choice(["large-folder", "direct", "legacy"], case_sensitive=False),
+    default="large-folder",
     show_default=True,
-    help="direct uploads the folder as-is; legacy keeps manifest/index generation",
+    help="large-folder uses HF resumable uploads; legacy keeps the old per-file/index flow",
+)
+@click.option("--staging-dir", default=None, type=click.Path(file_okay=False), help="Folder used to stage upload_large_folder layout")
+@click.option("--max-files-per-folder", default=9000, show_default=True, type=int, help="Maximum audio files per staged leaf folder")
+@click.option(
+    "--staging-mode",
+    type=click.Choice(["hardlink", "copy"], case_sensitive=False),
+    default="hardlink",
+    show_default=True,
+    help="Use hardlinks when possible to avoid duplicating audio bytes",
 )
 @click.option("--dry-run", is_flag=True, default=False, help="Scan and report what would be uploaded, do not perform uploads")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show detailed logging for debugging")
@@ -143,6 +160,9 @@ def upload_cmd(
     batch_size: int | None,
     workers: int | None,
     upload_mode: str,
+    staging_dir: str | None,
+    max_files_per_folder: int,
+    staging_mode: str,
     dry_run: bool,
     verbose: bool,
 ):
@@ -170,6 +190,149 @@ def upload_cmd(
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
     configure_hf_http_backoff()
+
+    upload_mode = (upload_mode or "large-folder").strip().lower()
+    if upload_mode == "direct":
+        upload_mode = "large-folder"
+
+    if upload_mode == "large-folder":
+        from rich.console import Console
+        from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+
+        console = Console()
+        scan_state: dict[str, Any] = {}
+        remote_state: dict[str, Any] = {}
+        staging_state: dict[str, Any] = {}
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(complete_style="green", finished_style="green"),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        ) as progress:
+            scan_task = progress.add_task("Scanning local audio files", total=None)
+
+            def on_scan(state: dict[str, Any]) -> None:
+                scan_state.update(state)
+                progress.update(scan_task, completed=int(state.get("files", 0)))
+
+            records = scan_local_inventory(segments_dir, on_progress=on_scan)
+            total_files = len(records)
+            total_size = sum(record.size for record in records)
+            progress.update(scan_task, total=total_files, completed=total_files)
+
+            console.print(f"[green]Found[/green] {total_files} audio files ({total_size} bytes) under {segments_dir}")
+
+            if dry_run:
+                remote_paths: set[str] = set()
+            else:
+                if token:
+                    hf_token = token
+                else:
+                    hf_token = AuthService().require_token()
+                try:
+                    from huggingface_hub import HfApi
+
+                    api = HfApi(token=hf_token)
+                except Exception as exc:  # pragma: no cover - external
+                    raise click.ClickException(build_error_message(exc)) from exc
+
+                remote_task = progress.add_task("Loading remote repository index", total=None)
+
+                def on_remote(state: dict[str, Any]) -> None:
+                    remote_state.update(state)
+                    if state.get("done"):
+                        progress.update(remote_task, total=int(state.get("files", 0)), completed=int(state.get("files", 0)))
+
+                try:
+                    remote_paths = load_remote_paths(api, repo_id, on_progress=on_remote)
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    if "404" in msg or "not found" in msg:
+                        api.create_repo(repo_id=repo_id, repo_type="dataset", private=True, exist_ok=True)
+                        remote_paths = set()
+                        progress.update(remote_task, total=0, completed=0)
+                    else:
+                        raise click.ClickException(f"Could not list remote dataset files: {exc}") from exc
+
+            plan = build_upload_plan(
+                records,
+                remote_paths,
+                remote_base=remote_base,
+                max_files_per_folder=max_files_per_folder,
+            )
+            upload_count = sum(1 for item in plan if item.status == "upload")
+            skipped_count = len(plan) - upload_count
+            upload_bytes = sum(item.size for item in plan if item.status == "upload")
+            console.print(
+                f"[cyan]Plan[/cyan] {upload_count}/{len(plan)} files to upload, "
+                f"{skipped_count} already present, {upload_bytes} bytes pending"
+            )
+
+            if dry_run:
+                for item in plan[:20]:
+                    console.print(f" - {item.status}: {item.original_relative_path} -> {item.stored_path}")
+                if csv_file:
+                    console.print(f"Would also stage CSV: {csv_file} -> index/detections.csv")
+                return
+
+            if upload_count == 0:
+                console.print("[green]Nothing to upload.[/green]")
+                return
+
+            if staging_dir:
+                staging_path = Path(staging_dir).resolve()
+            else:
+                safe_repo = repo_id.replace("/", "__")
+                staging_path = Path(tempfile.gettempdir()) / "hf-dataset-uploader" / safe_repo / "staging"
+
+            staging_task = progress.add_task("Building upload staging folder", total=upload_count)
+
+            def on_staging(state: dict[str, Any]) -> None:
+                staging_state.update(state)
+                completed = int(state.get("files", state.get("upload_files", 0)))
+                progress.update(staging_task, completed=min(completed, upload_count), total=upload_count)
+
+            staging_summary = materialize_staging_folder(
+                plan,
+                staging_path,
+                csv_file=csv_file,
+                repo_id=repo_id,
+                mode=staging_mode,
+                on_progress=on_staging,
+            )
+            progress.update(staging_task, completed=upload_count, total=upload_count)
+
+        click.echo("\nStarting Hugging Face large-folder upload...")
+        start_time = time.time()
+        try:
+            upload_large_staging_folder(
+                api,
+                repo_id=repo_id,
+                staging_dir=staging_summary["staging_dir"],
+                workers=workers,
+                private=True,
+                print_report_every=int(os.getenv("BNU_UPLOAD_REPORT_EVERY", "30")),
+                disable_file_progress=not verbose,
+                quiet_hf_logs=not verbose,
+            )
+        except Exception as exc:
+            raise click.ClickException(f"Large-folder upload failed: {exc}") from exc
+
+        elapsed = int(time.time() - start_time)
+        click.echo("\n" + "=" * 60)
+        click.echo("LARGE-FOLDER UPLOAD COMPLETE")
+        click.echo("=" * 60)
+        click.echo(f"Repo:      {repo_id}")
+        click.echo(f"Staging:   {staging_summary['staging_dir']}")
+        click.echo(f"Uploaded:  {staging_summary['upload_files']} files")
+        click.echo(f"Skipped:   {staging_summary['skipped_files']} files")
+        click.echo(f"Indexed:   {staging_summary['total_files']} files")
+        click.echo(f"Time:      {elapsed} seconds")
+        click.echo("=" * 60)
+        return
 
     scanner = LocalScanner()
     summary = scanner.scan_folder(segments_dir)
@@ -209,8 +372,7 @@ def upload_cmd(
     except Exception as exc:  # pragma: no cover - external
         raise click.ClickException(build_error_message(exc)) from exc
 
-    # Safety-first normalization: direct is always the default unless legacy is explicitly requested.
-    upload_mode = (upload_mode or "direct").strip().lower()
+    # Safety-first normalization: direct is handled by the large-folder path above.
     use_legacy_mode = upload_mode == "legacy"
     if verbose:
         click.echo(f"[DEBUG] Effective upload mode: {'legacy' if use_legacy_mode else 'direct'}")
